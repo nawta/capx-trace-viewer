@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "capx-trace-viewer"
+version = "0.1.0"
+description = "Read-only viewer for CaP-X experiment traces"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = {text = "MIT"}
+authors = [{name = "nawta"}]
+dependencies = ["fastapi>=0.110", "uvicorn>=0.27", "numpy>=1.26,<3", "pillow>=10"]
+
+[project.urls]
+Homepage = "https://github.com/nawta/capx-trace-viewer"
+Repository = "https://github.com/nawta/capx-trace-viewer"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx>=0.27", "h11>=0.14", "imageio[ffmpeg]>=2.34"]
+demo = ["playwright>=1.40"]
+
+[project.scripts]
+capx-trace-viewer = "capx_trace_viewer.server:main"
+
+[tool.setuptools.packages.find]
+include = ["capx_trace_viewer*"]
