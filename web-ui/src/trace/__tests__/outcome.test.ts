@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { episodeVerdict } from '../outcome';
+import { episodeVerdict, headerVerdict } from '../outcome';
+import { runnerRecordFor, episodeKeyOf } from '../runner';
 import type { EpisodeSummary, RunnerRecord } from '../types';
 const ep: EpisodeSummary = {episode_id:'e',task:'cube',condition:'S',seed:1,attempt_index:1,start_wall_time:1001,status:'ended'};
 const record: RunnerRecord = {task:'cube',condition:'S',seed:1,attempts:[
@@ -22,4 +23,14 @@ test('missing earlier attempt outcome remains unknown', () => {
 test('unknown is not false; running is live', () => {
   assert.equal(episodeVerdict(ep,[{...record,attempts:[{...record.attempts![0],task_success:null}]}]),'unknown');
   assert.equal(episodeVerdict({...ep,status:'running'},[record]),'running');
+});
+test('header uses episode task result only after a zero-record upstream run loads',()=>{
+ const summary={...ep,end_reason:'completed' as const,episode:{harness_summary:{task_completed:true}}};
+ const none=runnerRecordFor([],episodeKeyOf(null,summary,summary.start_wall_time));
+ assert.equal(headerVerdict(false,none,summary,'envs.runner',true,0),'成功');
+ assert.equal(headerVerdict(false,none,summary,'envs.runner',false,0),'結果未確認');
+  assert.equal(headerVerdict(false,none,summary,null,true,0),'結果未確認');
+ assert.equal(headerVerdict(false,none,summary,'experiments.run',true,0),'結果未確認');
+ assert.equal(headerVerdict(false,none,summary,'web_ui',true,0),'結果未確認');
+ assert.equal(headerVerdict(false,none,summary,'envs.runner',true,1),'結果未確認');
 });

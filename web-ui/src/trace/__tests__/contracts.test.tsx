@@ -87,7 +87,7 @@ test('a cut str(e) (message_cut) is labelled in the API log and left unchecked i
 
 test('redacted tracebacks, HTTP attempt errors, model errors and hook failure reasons are labelled', () => {
   const r = new Rec();
-  const startEv = r.episodeStart({ tracer: { version: '1', hooks_installed: [], hooks_failed: [{ hook: 'H9', target: 'sam3_seg_fn', reason: 'url: /x?[query removed]', reason_redacted: true }] } });
+  const startEv = r.episodeStart({ tracer: { version: '1', hooks_installed: [], hooks_skipped: [{ hook: 'H2', target: 'optional_helper', reason: 'optional_helper: not found' }], hooks_failed: [{ hook: 'H9', target: 'sam3_seg_fn', reason: 'url: /x?[query removed]', reason_redacted: true }] } });
   const req = r.request('code_generator', 'lc0');
   const e = r.attemptError(req, 401, 'HTTPError: 401 for url http://h/v1?[query removed]');
   Object.assign(e.data as Record<string, unknown>, { message_redacted: true, body_excerpt: '{"error": "bad key ***masked***"}', body_excerpt_redacted: true });
@@ -107,6 +107,7 @@ test('redacted tracebacks, HTTP attempt errors, model errors and hook failure re
   assert.match(out, /秘密情報を伏せて保存/);
   const debug = text(<DebugTab {...props(m, sel(m, startEv))} />);
   assert.match(debug, /H9 sam3_seg_fn url: \/x\?\[query removed\]（秘密情報を伏せて保存）/);
+  assert.match(debug, /省略したフック: H2 optional_helper optional_helper: not found/);
 });
 
 test('debug recorder facts identify the API and service wrapper hooks', () => {

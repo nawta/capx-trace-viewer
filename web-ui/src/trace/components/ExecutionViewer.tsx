@@ -4,7 +4,7 @@ import { episodeFileUrl, type EpisodeRef } from '../api';
 import { executionFrame, executionRange, executionResult, executionSource, selectedExecution } from '../executions';
 import { useFullText } from '../hooks';
 import type { EpisodeModel, Selection, TNode } from '../model';
-import { playbackMap, type TrialVideo } from '../playback';
+import { canPlayExecutionVideo, chooseExecutionVideo, playbackMap, validClip, type TrialVideo } from '../playback';
 import { dataOf, type TextValue } from '../types';
 import { SmallButton } from './common';
 import { SimplePrompt } from './SimplePrompt';
@@ -21,7 +21,9 @@ function RecordedText({ep, value}: {ep:EpisodeRef;value:TextValue|null|undefined
 }
 
 function ExecutionClip({model,block,ep,videos}:{model:EpisodeModel;block:TNode;ep:EpisodeRef;videos:TrialVideo[]}) {
-  const video=videos.find(v=>v.name==='video_combined.mp4');
+  const choice=chooseExecutionVideo(block,videos);
+  const video=choice.video;
+  const turnVideo=!choice.wholeTrial && video;
   const range=executionRange(block);
   const noMotion=!!range && range.start===range.end;
   const frame=executionFrame(model,block);
@@ -29,10 +31,11 @@ function ExecutionClip({model,block,ep,videos}:{model:EpisodeModel;block:TNode;e
   const [failed,setFailed]=useState(false);
   const player=useRef<HTMLVideoElement>(null);
   const mapping=useMemo(()=>playbackMap(model,video?.name??'',duration),[model,video?.name,duration]);
-  const clip=range && mapping.timeForStep ? {start:mapping.timeForStep(range.start),end:mapping.timeForStep(range.end)} : null;
+  const clip=validClip(choice.wholeTrial && range && mapping.timeForStep ? {start:mapping.timeForStep(range.start),end:mapping.timeForStep(range.end)} : null);
   const start=clip?.start ?? null, end=clip?.end ?? null;
   useEffect(()=>{
     const el=player.current;
+    if(el && turnVideo)el.playbackRate=.5;
     if(!el || start===null || end===null || end<=start)return;
     el.pause();el.currentTime=start;el.playbackRate=.5;
     let handle=0;
@@ -48,15 +51,15 @@ function ExecutionClip({model,block,ep,videos}:{model:EpisodeModel;block:TNode;e
     {frame ? <TraceImage src={episodeFileUrl(ep,frame)} alt="実行開始時" provenance="debug_frame" className="h-64 w-full"/> : <p className="text-text-tertiary">開始時の画像は未記録です。</p>}
   </div>;
   if(!video)return <p className="p-4 text-text-tertiary">この回に対応する動画は見つかりません。</p>;
-  const ready=!!clip && clip.end>clip.start;
+  const ready=canPlayExecutionVideo(video, !!turnVideo, clip);
   return <div className="p-4 space-y-2">
-    {!ready && <p className="text-sm text-amber-200">{failed?'動画を読み込めません。':!range?'この回の動作範囲は未記録です。':mapping.reason ?? 'この回に対応する動画区間を確認できません。'}</p>}
+    {(failed || !ready) && <p className="text-sm text-amber-200">{failed?'動画を読み込めません。':!range?'この回の動作範囲は未記録です。':mapping.reason ?? 'この回に対応する動画区間を確認できません。'}</p>}
     <video ref={player} src={video.url} controls preload="metadata" aria-label="選んだ実行の動画" className={`w-full max-h-[45vh] bg-black rounded ${ready?'':'hidden'}`}
-      onLoadedMetadata={e=>setDuration(e.currentTarget.duration)} onError={()=>setFailed(true)}
+      onLoadedMetadata={e=>{setDuration(e.currentTarget.duration);if(turnVideo)e.currentTarget.playbackRate=.5;}} onError={()=>setFailed(true)}
       onSeeking={e=>{if(clip && (e.currentTarget.currentTime<clip.start || e.currentTarget.currentTime>clip.end))e.currentTarget.currentTime=Math.min(Math.max(e.currentTarget.currentTime,clip.start),clip.end);}}
       onPlay={e=>{if(clip && e.currentTarget.currentTime>=clip.end-.03)e.currentTarget.currentTime=clip.start;}}
       onTimeUpdate={e=>{if(clip && e.currentTarget.currentTime>=clip.end){e.currentTarget.pause();e.currentTarget.currentTime=Math.max(clip.start,clip.end-.001);}}}/>
-    {ready && <p className="text-xs text-text-tertiary">この回の区間のみ再生（全体動画の {clip.start.toFixed(2)}〜{clip.end.toFixed(2)} 秒）。記録フレーム間は補間しています。</p>}
+    {ready && <p className="text-xs text-text-tertiary">{turnVideo?'この回の動画を 0.5 倍速で再生しています。':clip && clip.end>clip.start?`この回の区間のみ再生（全体動画の ${clip.start.toFixed(2)}〜${clip.end.toFixed(2)} 秒）。記録フレーム間は補間しています。`:'試行全体の動画を再生しています。'}</p>}
   </div>;
 }
 

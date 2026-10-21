@@ -165,6 +165,7 @@ export function episodeStatusShortLabel(status: string | null | undefined): stri
 /** Plain-language meaning of trace_warning codes (5.2), for the gap summary. */
 export const WARNING_CODE_LABELS: Record<string, string> = {
   write_failed: '保存失敗',
+  unsafe_path: '安全でない保存先パス',
   disk_low: 'ディスク残量不足',
   queue_full: '書き込み待ちの上限超過',
   dropped_events: 'イベントの欠落',
@@ -211,10 +212,11 @@ export function arrayBudgetLabel(n: number): string {
 
 /** 6.5 note for requests sent to the local proxy (translated). */
 export const PROXY_NOTE =
-  'この記録は CaP-X がローカルプロキシ（capx/serving/openrouter_server.py, :8110）へ送った本文です。' +
-  'プロキシは要求を組み直します: モデル名の接頭辞を外し、未知のフィールド（例: Claude の thinking）を捨て、' +
-  'temperature=0.2 と max_tokens=256 が無ければ補い、1 回のクライアント試行の中で 429 を再試行することがあります。' +
-  'プロバイダが受け取った要求はこの本文と異なる場合があります。';
+  'この記録はローカルの送信先へ送った本文です。送信先の判定はホストと設定されたポートによる推定です。' +
+  'CaP-X 付属の capx/serving/openrouter_server.py を使う場合、プロキシはモデル名の接頭辞を外し、' +
+  'temperature=0.2 と max_tokens=256 の既定値を適用します。未知のリクエスト項目は除外され、' +
+  '本文は text と image_url 以外を拒否します。OpenAI SDK は 429/5xx を既定回数まで内部で再試行します。' +
+  'ストリーミング以外の応答は usage と reasoning を含めずに組み直されます。';
 
 /** 6.3: what 「保存用正規化済みpayload」 means (translated). */
 export const NORMALIZED_PAYLOAD_NOTE =

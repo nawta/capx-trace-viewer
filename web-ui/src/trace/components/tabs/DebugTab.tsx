@@ -383,6 +383,8 @@ function RecorderFacts({ model, summary }: { model: EpisodeModel; summary: Episo
   const envFrom = start?.env ? 'episode_start' : epJson?.env ? 'episode.json（env はエピソード中に作られたため）' : null;
   const during = Array.isArray(epJson?.hooks_installed_during_episode) ? epJson.hooks_installed_during_episode : [];
   const failed = Array.isArray(tracer?.hooks_failed) ? tracer.hooks_failed : [];
+  const skipped = Array.isArray(tracer?.hooks_skipped) ? tracer.hooks_skipped : [];
+  const skippedDuring = Array.isArray(epJson?.hooks_skipped_during_episode) ? epJson.hooks_skipped_during_episode : [];
   // hook_install_failed warnings: a hook that failed while the episode was open
   // (during_episode), or the API wrappers of one instance (the trace recorder).
   const failedWarnings = model.warnings.map((w) => dataOf(w, 'trace_warning')).filter((d) => d.code === 'hook_install_failed');
@@ -452,6 +454,11 @@ function RecorderFacts({ model, summary }: { model: EpisodeModel; summary: Episo
             <div className="text-text-tertiary">エピソード中に導入されたフック（{during.length}）: 対象のモジュールがエピソード中に初めて読み込まれたもの（Web UI など）</div>
             <div className="font-mono text-[11px] text-text-secondary break-all">{during.join(' · ')}</div>
           </>
+        )}
+        {(skipped.length > 0 || skippedDuring.length > 0) && (
+          <Notice tone="amber">
+            省略したフック: {[...skipped, ...skippedDuring].map(hookName).join(' / ')}
+          </Notice>
         )}
         {(failed.length > 0 || failedWarnings.length > 0) && (
           <Notice tone="red">

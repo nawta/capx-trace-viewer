@@ -8,7 +8,7 @@ every episode.json carry "synthetic": true.
 
 The run "demo_trace_viewer" holds three episodes:
 
-- cube_stack__M4_skill__s1__i1__a1 (ended with gaps): a multi-turn condition with VDM
+- cube_stack__M4__s1__i1__a1 (ended with gaps): a multi-turn condition with VDM
   image differencing and visual feedback. It has an HTTP 503 retry, a VDM request with
   two images in order, a perception VLM (Molmo) request nested under an API call, a
   nested API call, an API call that raises, a degraded SAM3 call, a skipped frame
@@ -83,7 +83,7 @@ SUBSAMPLE = 5  # control steps per buffer frame (_record_frame)
 CONTROL_DT = 0.05  # robosuite control period, seconds of simulated time per step
 
 PROXY_URL = "http://127.0.0.1:8110/chat/completions"
-VLLM_URL = "http://127.0.0.1:8120/v1/chat/completions"
+VLLM_URL = "http://127.0.0.1:8000/v1/chat/completions"
 MOLMO_URL = "http://127.0.0.1:8122/v1/chat/completions"
 GEMINI = "google/gemini-3-flash-preview"
 
@@ -177,7 +177,7 @@ summarize_workspace() -> dict[str, typing.Any]
     Describe every body in the workspace: name, position (world frame, metres), faces and
     mesh vertices.
 
-check_stack_alignment(top: str, bottom: str) -> None
+verify_demo_alignment(top: str, bottom: str) -> None
   Doc:
     Check that the contact points between two stacked objects are within 2 mm.
     Raises ValueError listing every contact point outside the tolerance."""
@@ -1831,7 +1831,7 @@ print("released the red cube above the green cube")
 report = summarize_workspace()
 print("workspace objects:", report["n_objects"])
 try:
-    check_stack_alignment("red cube", "green cube")
+    verify_demo_alignment("red cube", "green cube")
 except ValueError as exc:
     print("alignment check failed:", str(exc)[:60])"""
 
@@ -1873,7 +1873,7 @@ ALIGNMENT_MESSAGE = (
 # generated code's frame is not in exc.__traceback__ yet), then "<type>: <message>".
 TRACEBACK_ALIGNMENT = (
     "Traceback (most recent call last):\n"
-    '  File "/path/to/cap-x/capx/integrations/franka/skill_library.py", line 311, in check_stack_alignment\n'
+    '  File "/synthetic_demo/alignment.py", line 311, in verify_demo_alignment\n'
     "    raise ValueError(\n"
     "ValueError: " + ALIGNMENT_MESSAGE
 )
@@ -1882,7 +1882,7 @@ TRACEBACK_ALIGNMENT = (
 def build_episode_a(run_dir: Path, now: float) -> EpisodeBuilder:
     ep = EpisodeBuilder(
         run_dir,
-        "cube_stack__M4_skill__s1__i1__a1",
+        "cube_stack__M4__s1__i1__a1",
         pid=412345,
         t0=now - 7200.0,
         mono0=91234.5,
@@ -1901,13 +1901,13 @@ def build_episode_a(run_dir: Path, now: float) -> EpisodeBuilder:
         {
             "source": "experiments.run",
             "task": "cube_stack",
-            "condition": "M4_skill",
+            "condition": "M4",
             "seed": 1,
             "attempt_index": 1,
             "runner_invocation": 1,
-            "condition_label": "M4_skill",
+            "condition_label": "M4",
             "runner_condition": {
-                "label": "M4_skill",
+                "label": "M4",
                 "config_path": config_path,
                 "privileged": False,
                 "apis": ["FrankaControlApiReducedSkillLibrary"],
@@ -2344,9 +2344,9 @@ def build_episode_a(run_dir: Path, now: float) -> EpisodeBuilder:
     ep.print_out(f"workspace objects: {report['n_objects']}\n")
     # an exception message over 4000 characters (a text asset), caught by the generated code
     call = ep.api_start(
-        "check_stack_alignment", {"top": "red cube", "bottom": "green cube"}, block=block1, scene=scene,
-        line=block1_line('    check_stack_alignment("red cube", "green cube")'),
-        source_line='    check_stack_alignment("red cube", "green cube")',
+        "verify_demo_alignment", {"top": "red cube", "bottom": "green cube"}, block=block1, scene=scene,
+        line=block1_line('    verify_demo_alignment("red cube", "green cube")'),
+        source_line='    verify_demo_alignment("red cube", "green cube")',
         qualname_owner="FrankaControlApiReducedSkillLibrary",
     )
     ep.api_end(call, scene=scene, error=("ValueError", ALIGNMENT_MESSAGE, TRACEBACK_ALIGNMENT), duration_s=0.05)
@@ -3068,7 +3068,7 @@ def write_run_files(run_dir: Path, now: float, a: EpisodeBuilder, c: EpisodeBuil
     (run_dir / "run.json").write_text(json.dumps(run_json, indent=1))
     records = [
         runner_record(
-            "cube_stack", "M4_skill", 1, status="completed", error=None,
+            "cube_stack", "M4", 1, status="completed", error=None,
             outcome={"task_success": True, "code_execution_success": True, "agent_finish": True, "infrastructure_error": False, "timeout": False, "horizon_exhausted": False, "termination_reason": "agent_finish"},
             reward=1.0, started=a.events[0]["wall_time"], duration=round(a.wall - a.events[0]["wall_time"], 3),
         ),

@@ -178,7 +178,7 @@ function ModelCallOutput({ model, ep, selection, running, onSelect, call }: TabP
                 'latency',
                 `${fmtDuration(rd.latency_s)}${
                   !rd.streamed && dataOf(attempt?.request ?? call.node.primary, 'model_request').endpoint?.known_proxy
-                    ? '（:8110 プロキシが内部で 429 を再試行した時間を含む場合があります）'
+                    ? '（プロキシ内部の処理時間を含む場合があります）'
                     : ''
                 }`,
               ],

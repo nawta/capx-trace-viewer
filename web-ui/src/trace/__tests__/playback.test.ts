@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildEpisodeModel } from '../model';
-import { cueAt, playbackMap, trialVideos } from '../playback';
+import { cameraVideos, canPlayExecutionVideo, chooseExecutionVideo, cueAt, episodeVideos, playbackMap, trialVideos, validClip, videosForEpisode } from '../playback';
 import type { RunnerMatch } from '../runner';
 import { Rec } from './fixtures';
 import { dataOf } from '../types';
@@ -44,6 +44,12 @@ test('video lookup preserves registered root identity, never guesses from seed',
  assert.deepEqual(trialVideos('run',m,['/different']),[]);
  assert.deepEqual(trialVideos('other-run',m,['/tmp/runs']),[]);
 });
+test('runner artifact lookup uses only the original combined MP4',()=>{
+ const m=match();m.record!.artifacts={trial_dir:'/tmp/runs/run/task/C/trial_1',videos:[
+  '/tmp/runs/run/task/C/trial_1/video_combined_main.mp4',
+  '/tmp/runs/run/task/C/trial_1/video_combined.mp4']};
+ assert.deepEqual(trialVideos('run',m,['/tmp/runs']).map(v=>v.name),['video_combined.mp4']);
+});
 test('earlier and unverified attempts never receive the final attempt video',()=>{
  assert.deepEqual(trialVideos('run',{...match(),isFinal:false},['/tmp/runs']),[]);
  assert.deepEqual(trialVideos('run',{...match(),unverified:true},['/tmp/runs']),[]);
@@ -51,4 +57,54 @@ test('earlier and unverified attempts never receive the final attempt video',()=
 test('rejects outside and traversal video paths',()=>{
  const m=match();m.record!.artifacts={trial_dir:'/tmp/runs/run/task/C/trial_1',videos:['/outside/video_combined.mp4','/tmp/runs/run/task/C/trial_1/../video_combined.mp4']};
  assert.deepEqual(trialVideos('run',m,['/tmp/runs']),[]);
+});
+test('upstream episode videos use only written, declared files and retain turn indexes',()=>{
+ const r=new Rec();r.episodeStart();r.episodeEnd();
+ r.add('trial_videos',{}, {artifacts:[
+  {path:'videos/video_turn_00.mp4',mime:'video/mp4',written:true,turn_index:0},
+  {path:'videos/video_combined.mp4',mime:'video/mp4',written:true,turn_index:null},
+  {path:'videos/video_turn_01.mp4',mime:'video/mp4',written:false,turn_index:1},
+  {path:'videos/../secret.mp4',mime:'video/mp4',written:true},
+ ]});
+ const videos=episodeVideos({runId:'r',episodeId:'e',generation:'gen'},buildEpisodeModel(r.events));
+ assert.deepEqual(videos.map(v=>[v.name,v.turnIndex??null]),[['video_turn_00.mp4',0],['video_combined.mp4',null]]);
+ assert.match(videos[0].url,/\/episodes\/e\/file\/videos\/video_turn_00\.mp4/);
+ assert.match(videos[0].url,/g=gen/);
+});
+test('turn lookup uses recorded block indexes across missing events and regeneration',()=>{
+ const r=new Rec();r.episodeStart();r.blockStart(null,'a',{block_index:0});
+ r.request('code_generator','regeneration');r.blockStart(null,'b',{block_index:2});
+ const model=buildEpisodeModel(r.events);
+ const videos=[0,1,2].map(i=>({name:`video_turn_0${i}.mp4`,url:`/turn/${i}`,turnIndex:i}));
+ assert.equal(chooseExecutionVideo(model.blocks[0],videos).video?.turnIndex,0);
+ assert.equal(chooseExecutionVideo(model.blocks[1],videos).video?.turnIndex,2);
+ assert.equal(chooseExecutionVideo(model.blocks[1],videos.filter(v=>v.turnIndex!==2)).video,undefined);
+ assert.equal(chooseExecutionVideo(model.blocks[1],[...videos.filter(v=>v.turnIndex!==2),{name:'video_combined_main.mp4',url:'/episodes/e/file/combined'}]).video?.name,'video_combined_main.mp4');
+ assert.equal(chooseExecutionVideo(model.blocks[1],[...videos.filter(v=>v.turnIndex!==2),
+  {name:'video_combined_wrist.mp4',url:'/wrist'},{name:'video_combined_main.mp4',url:'/main'}]).video?.name,'video_combined_main.mp4');
+ const unknown=new Rec();unknown.episodeStart();unknown.blockStart(null,'c',{block_index:null});
+ assert.equal(chooseExecutionVideo(buildEpisodeModel(unknown.events).blocks[0],videos).video,undefined);
+ assert.deepEqual(cameraVideos([...videos,{name:'video_combined_main.mp4',url:'/combined'}]).map(v=>v.name),['video_combined_main.mp4']);
+ assert.ok(playbackMap(model,'video_combined_main.mp4',2).reason);
+ assert.equal(canPlayExecutionVideo({name:'video_combined_main.mp4',url:'/episodes/e',source:'episode'},false,null),true);
+ assert.equal(canPlayExecutionVideo({name:'video_combined.mp4',url:'/legacy',source:'runner'},false,null),false);
+ assert.equal(validClip({start:1,end:1}),null);
+ assert.equal(validClip({start:2,end:1}),null);
+ assert.equal(canPlayExecutionVideo({name:'video_combined.mp4',url:'/episodes/e',source:'episode'},false,validClip({start:1,end:1})),true);
+});
+test('a runner record with no usable MP4 falls back to copied episode video',()=>{
+ const r=new Rec();r.episodeStart();r.episodeEnd();r.add('trial_videos',{}, {artifacts:[{path:'videos/video_combined_wrist.mp4',mime:'video/mp4',written:true,turn_index:null}]});
+ const model=buildEpisodeModel(r.events);
+ const ep={runId:'run',episodeId:'ep',generation:'new'};
+ assert.deepEqual(videosForEpisode(ep,model,{...match(),isFinal:false},['/tmp/runs']).map(v=>v.name),['video_combined_wrist.mp4']);
+ assert.match(videosForEpisode(ep,model,{...match(),isFinal:false},['/tmp/runs'])[0].url,/g=new/);
+ assert.equal(videosForEpisode(ep,model,match(),['/tmp/runs'])[0].name,'video_combined.mp4');
+});
+test('a stale turn falls back to the copied combined video',()=>{
+ const r=new Rec();r.episodeStart();r.blockStart(null,'turn1',{block_index:1});r.episodeEnd();
+ r.add('trial_videos',{}, {artifacts:[
+  {path:'videos/video_turn_01.mp4',mime:'video/mp4',written:false,reason:'stale',turn_index:1},
+  {path:'videos/video_combined.mp4',mime:'video/mp4',written:true,turn_index:null}]});
+ const model=buildEpisodeModel(r.events);
+ assert.equal(chooseExecutionVideo(model.blocks[0],episodeVideos({runId:'r',episodeId:'e'},model)).video?.name,'video_combined.mp4');
 });

@@ -1,10 +1,11 @@
 /** In-page MP4 playback and prompt following (docs/trace-format.md §9.3). */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { nodeTitle, type EpisodeModel, type TNode } from '../model';
-import { cueAt, playbackMap, type TrialVideo, type PlaybackCue } from '../playback';
+import { cameraVideos, cueAt, playbackMap, type TrialVideo, type PlaybackCue } from '../playback';
 import { SmallButton } from './common';
 
 export function VideoPlayback({model, videos, onSelect, simple = false}: {simple?: boolean; model: EpisodeModel; videos: TrialVideo[]; onSelect: (node:TNode)=>void}) {
+  videos = cameraVideos(videos);
   const [name,setName]=useState(videos[0]?.name ?? '');
   const chosen=videos.find(v=>v.name===name) ?? videos[0];
   const [duration,setDuration]=useState(0);

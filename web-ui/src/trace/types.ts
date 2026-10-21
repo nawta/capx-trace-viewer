@@ -43,6 +43,7 @@ export interface Artifact {
   written?: boolean | null;
   reason?: string | null;
   name?: string | null;
+  turn_index?: number | null;
 }
 
 export interface EventRefs {
@@ -289,6 +290,7 @@ export interface EpisodeStartData {
     version?: string | null;
     settings?: Record<string, unknown> | null;
     hooks_installed?: string[] | null;
+    hooks_skipped?: unknown[] | null;
     hooks_failed?: unknown[] | null;
   } | null;
   host?: string | null;
@@ -755,10 +757,13 @@ export interface EpisodeSummary {
 
 /** Fields of episode.json the viewer reads beyond the summary (the trace recorder). */
 export interface EpisodeJson {
+  video_copy_pending?: boolean;
+  updated_wall_time?: number;
   env?: EnvInfo | null;
   apis_wrapped?: ApiWrappedInfo[] | null;
   /** Hooks installed while the episode was open (web UI: trial role hook, trial lifecycle hook, environment hook are first imported inside it). */
   hooks_installed_during_episode?: string[] | null;
+  hooks_skipped_during_episode?: Array<{ hook: string; target: string; reason: string; reason_redacted?: boolean }> | null;
   tracer_overhead_s?: number | null;
   [key: string]: unknown;
 }

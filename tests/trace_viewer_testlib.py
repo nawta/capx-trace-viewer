@@ -20,7 +20,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEMO_SCRIPT = REPO_ROOT / "scripts" / "make_demo_trace.py"
 RUN_ID = "demo_trace_viewer"
-EPISODE_ENDED = "cube_stack__M4_skill__s1__i1__a1"
+EPISODE_ENDED = "cube_stack__M4__s1__i1__a1"
 EPISODE_RUNNING = "20260926T060000Z__web__5e1f0a2c"
 EPISODE_INCOMPLETE = "cube_lift__S3__s2__i1__a1"
 LOOPBACK_HOST = "127.0.0.1:8765"

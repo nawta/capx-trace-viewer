@@ -1,9 +1,10 @@
 /** Video lookup and frame-based playback mapping; docs/trace-format.md §9.3. */
-import { traceApi } from './api';
+import { episodeFileUrl, traceApi, type EpisodeRef } from './api';
 import type { EpisodeModel, FrameRec, TNode } from './model';
+import { dataOf } from './types';
 import type { RunnerMatch } from './runner';
 
-export interface TrialVideo { url: string; name: string }
+export interface TrialVideo { url: string; name: string; turnIndex?: number; source?: 'episode' | 'runner' }
 const object = (x: unknown): Record<string, unknown> => x && typeof x === 'object' ? x as Record<string, unknown> : {};
 const safe = (x: string) => !!x && x !== '.' && x !== '..' && !/[\\/\0]/.test(x);
 
@@ -21,9 +22,52 @@ export function trialVideos(run: string, match: RunnerMatch, roots: string[]): T
   return a.videos.flatMap((p: unknown) => {
     if (typeof p !== 'string' || !p.startsWith(`${dir}/`)) return [];
     const name = p.slice(dir.length + 1);
-    if (!safe(name) || !/^video_combined(?:_[\w-]+)?\.mp4$/.test(name)) return [];
-    return [{ name, url: traceApi.legacyFileUrl(run, r.task!, r.condition!, trial, name, root) }];
+    if (name !== 'video_combined.mp4') return [];
+    return [{ name, url: traceApi.legacyFileUrl(run, r.task!, r.condition!, trial, name, root), source: 'runner' as const }];
   });
+}
+
+/** Videos copied into an upstream episode by H4; only declared, written files are shown. */
+export function episodeVideos(ep: EpisodeRef, model: EpisodeModel): TrialVideo[] {
+  return model.events.filter(e => e.event_type === 'trial_videos').flatMap(e => e.artifacts ?? []).flatMap(art => {
+    if (art.written !== true || typeof art.path !== 'string' || art.mime !== 'video/mp4') return [];
+    const match = /^videos\/(video_(?:turn_(\d+)(?:_[\w-]+)?|combined(?:_[\w-]+)?)\.mp4)$/.exec(art.path);
+    if (!match || (match[2] !== undefined &&
+      (typeof art.turn_index !== 'number' || art.turn_index !== Number(match[2])))) return [];
+    return [{name: match[1], url: episodeFileUrl(ep, art.path), source: 'episode' as const,
+      ...(match[2] !== undefined ? {turnIndex: Number(match[2])} : {})}];
+  });
+}
+
+/** A missing code block event must never shift a later turn onto an earlier video. */
+export function chooseExecutionVideo(block: TNode, videos: TrialVideo[]): {video: TrialVideo | undefined; wholeTrial: boolean} {
+  const index = dataOf(block.primary, 'code_block_start').block_index;
+  if (typeof index === 'number' && Number.isInteger(index) && index >= 0) {
+    const turn = videos.find(v => v.turnIndex === index && !v.name.includes('_wrist'));
+    if (turn) return {video: turn, wholeTrial: false};
+  }
+  const combined = videos.filter(v => /^video_combined(?:_[\w-]+)?\.mp4$/.test(v.name))
+    .sort((a,b) => (a.name === 'video_combined.mp4' ? -1 : b.name === 'video_combined.mp4' ? 1 : a.name.localeCompare(b.name)))[0];
+  return {video: combined, wholeTrial: true};
+}
+
+export function cameraVideos(videos: TrialVideo[]): TrialVideo[] {
+  return videos.filter(v => v.turnIndex === undefined);
+}
+
+export function canPlayExecutionVideo(video: TrialVideo | undefined, turnVideo: boolean,
+  clip: {start:number;end:number} | null): boolean {
+  return !!video && (turnVideo || video.source === 'episode' || !!clip && clip.end > clip.start);
+}
+
+export function validClip(clip: {start:number;end:number} | null): {start:number;end:number} | null {
+  return clip && Number.isFinite(clip.start) && Number.isFinite(clip.end) && clip.end > clip.start ? clip : null;
+}
+
+export function videosForEpisode(ep: EpisodeRef, model: EpisodeModel, match: RunnerMatch | null,
+  roots: string[]): TrialVideo[] {
+  const runner = match ? trialVideos(ep.runId, match, roots) : [];
+  return runner.length ? runner : episodeVideos(ep, model);
 }
 
 // the runner that wrote the trace encodes combined videos at 30 fps.

@@ -176,6 +176,26 @@ test('when the status leaves running, the page polls for the grace period, reads
   p.unmount();
 });
 
+test('opening after episode_end while video copy is pending keeps polling until trial_videos arrives', async () => {
+  resetBrowser();
+  const run = makeRun();
+  const e1 = endedEpisode(run, 'e1', clock.now / 1000 - 100);
+  e1.summary = {...e1.summary, episode: {video_copy_pending: true, updated_wall_time: clock.now / 1000}};
+  serve(run);
+  const p = open('/traces?view=details&run=r1&episode=e1');
+  await advance(3000);
+  assert.match(bar(p).poll.text, /動画を保存中/);
+  const before = requests(/\/events$/).sent;
+  await advance(65_000);
+  assert.ok(requests(/\/events$/).sent > before + 10, 'pending keeps polling past the normal grace maximum');
+  e1.events.push(ev('e1', 3, 'trial_videos', {}, {artifacts: [{path:'videos/video_combined.mp4',mime:'video/mp4',written:true}]}));
+  e1.summary = {...e1.summary, episode: {video_copy_pending: false, updated_wall_time: clock.now / 1000}};
+  await advance(3000);
+  assert.equal(bar(p).reader.count, 3);
+  assert.doesNotMatch(bar(p).poll.text, /動画を保存中/);
+  p.unmount();
+});
+
 test('after watching an attempt end, the records are re-read although no other episode was running yet', async () => {
   resetBrowser();
   const run = makeRun();
@@ -227,6 +247,8 @@ test('the top bar is told that the records are being read, or that reading them 
   // a later read fails: the records read before stay, and the failure is passed on
   failRuns = true;
   bar(p).onRefresh();
+  await advance(1000);
+  assert.deepEqual(bar(p).runnerRead, { loaded: true, loading: true, error: null }, 'data stays present during reload');
   await advance(3000);
   assert.deepEqual(bar(p).runnerRead, { loaded: true, loading: false, error: 'HTTP 500: boom' });
   assert.equal(bar(p).runnerRecords.length, 1);

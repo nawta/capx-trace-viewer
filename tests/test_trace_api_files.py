@@ -61,6 +61,20 @@ EP_URL = "/api/traces/runs/r1/episodes/ep1"
 LEGACY_URL = f"/api/traces/legacy/file/run1/task/cond/{TRIAL}"
 
 
+def test_episode_video_directory_serves_mp4_without_escape(swap_env: dict[str, Any]) -> None:
+    videos = swap_env["ep"] / "videos"
+    videos.mkdir()
+    (videos / "video_turn_00.mp4").write_bytes(b"portable mp4")
+    response = swap_env["client"].get(f"{EP_URL}/file/videos/video_turn_00.mp4")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "video/mp4"
+    assert response.content == b"portable mp4"
+    (videos / "video_turn_01.mp4").symlink_to(swap_env["outside"] / "x.txt")
+    escaped = swap_env["client"].get(f"{EP_URL}/file/videos/video_turn_01.mp4")
+    assert escaped.status_code == 403
+    assert SECRET.encode() not in escaped.content
+
+
 @pytest.fixture
 def swap_env(tmp_path: Path) -> dict[str, Any]:
     """A trace root and a runner root, each with a twin outside the root holding secrets."""

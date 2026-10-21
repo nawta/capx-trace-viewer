@@ -8,7 +8,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BROWSE_SUMMARY_MS, GRACE_MAX_MS, GRACE_MIN_MS, graceActive, live3dState, pollPlan, summaryDigest } from '../live';
+import { BROWSE_SUMMARY_MS, GRACE_MAX_MS, GRACE_MIN_MS, INTERRUPTED_COPY_POLL_MS, graceActive, live3dState, pollPlan, summaryDigest, videoCopyFinished, videoCopyInterrupted, videoCopyMessage } from '../live';
 import { EventsPager, type PagerSnapshot } from '../pager';
 import type { EpisodeSummary, EventsPage, TraceEvent } from '../types';
 
@@ -17,6 +17,26 @@ test('poll plan per mode', () => {
   assert.deepEqual(pollPlan({ live: false, running: true, grace: false }), { events: false, summaryMs: BROWSE_SUMMARY_MS });
   assert.deepEqual(pollPlan({ live: false, running: false, grace: true }), { events: true, summaryMs: 1000 });
   assert.deepEqual(pollPlan({ live: true, running: false, grace: false }), { events: false, summaryMs: null });
+  assert.deepEqual(pollPlan({ live: false, running: false, grace: false, videoPending: true }), { events: true, summaryMs: 1000 });
+  assert.deepEqual(pollPlan({ live: false, running: false, grace: false, videoPending: true, videoCopyInterrupted: true }), { events: false, summaryMs: INTERRUPTED_COPY_POLL_MS });
+});
+
+test('copy pending keeps polling when an ended episode is opened and reports interrupted copies',()=>{
+ const s:EpisodeSummary={episode_id:'e',status:'ended',episode:{video_copy_pending:true,updated_wall_time:1000}};
+ assert.equal(videoCopyMessage(s,1001_000),'動画を保存中');
+ assert.match(videoCopyMessage(s,1121_000)!,/保存されていません/);
+ assert.match(videoCopyMessage({...s,heartbeat_age_s:121},1001_000)!,/保存されていません/);
+ assert.equal(videoCopyInterrupted(s,1121_000),true);
+ assert.equal(pollPlan({live:false,running:false,grace:false,videoPending:true,videoCopyInterrupted:videoCopyInterrupted(s,1121_000)}).summaryMs,20_000);
+ const resumed={...s,heartbeat_age_s:1};
+ assert.equal(videoCopyInterrupted(resumed,1122_000),false);
+ assert.equal(pollPlan({live:false,running:false,grace:false,videoPending:true,videoCopyInterrupted:videoCopyInterrupted(resumed,1122_000)}).events,true);
+ const recovered={...s,episode:{video_copy_pending:false,updated_wall_time:1122}};
+ assert.equal(videoCopyInterrupted(recovered,1122_000),false);
+ assert.equal(videoCopyFinished(true,recovered.episode.video_copy_pending),true);
+ assert.equal(pollPlan({live:false,running:false,grace:false,videoPending:recovered.episode.video_copy_pending,videoCopyInterrupted:videoCopyInterrupted(recovered,1122_000)}).events,false);
+ assert.equal(videoCopyMessage({...s,episode:{video_copy_pending:false}},1121_000),null);
+ assert.notEqual(summaryDigest(s),summaryDigest({...s,episode:{video_copy_pending:false}}));
 });
 
 test('the grace period lasts at least 15 s, then until two quiet event polls and a stable summary', () => {

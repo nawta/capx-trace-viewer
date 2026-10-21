@@ -41,10 +41,11 @@ import { nextFocusToken } from './focus';
 import { fmtClock } from './format';
 import { useAsync, useDataAssets, useEpisodeEvents, useInterval, useStoredState, useUrlParams } from './hooks';
 import { LABELS } from './labels';
-import { GRACE_MAX_MS, RUNNER_POLL_MS, graceActive, live3dState, pollPlan, runnerPollActive, summaryDigest, type GraceStart, type Live3dState } from './live';
+import { GRACE_MAX_MS, RUNNER_POLL_MS, graceActive, live3dState, pollPlan, runnerPollActive, summaryDigest, videoCopyFinished, videoCopyInterrupted, videoCopyMessage, type GraceStart, type Live3dState } from './live';
 import { buildEpisodeModel, liveTarget, resolveSelection, selectionEventId, type TNode } from './model';
 import { episodeKeyOf, runnerRecordFor } from './runner';
-import { trialVideos } from './playback';
+import { videosForEpisode } from './playback';
+import { headerVerdict } from './outcome';
 import { dataOf } from './types';
 import { DetailTabs, type RangeFocus } from './components/DetailTabs';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -83,13 +84,15 @@ export default function TraceViewerPage() {
   const runDetail = useAsync(runId ? (s) => traceApi.run(runId, s) : null, [runId]);
   const status = summary.data?.status ?? null;
   const running = status === 'running';
+  const videoPending = summary.data?.episode?.video_copy_pending === true;
   const epKey = runId && episodeId ? `${runId}\u0000${episodeId}` : '';
 
   // Live: newest event selected; start in Browse when the URL names an event.
   const [live, setLive] = useState<boolean>(() => !new URLSearchParams(window.location.search).get('event'));
   // Polling after the episode stopped running (tail and late events); see live.ts.
   const [grace, setGrace] = useState<GraceStart | null>(null);
-  const plan = pollPlan({ live, running, grace: grace !== null });
+  const plan = pollPlan({ live, running, grace: grace !== null, videoPending,
+    videoCopyInterrupted: videoCopyInterrupted(summary.data) });
   const events = useEpisodeEvents(runId, episodeId, plan.events && !!runId && !!episodeId);
   useInterval(summary.poll, plan.summaryMs ?? 1000, plan.summaryMs !== null && !!runId && !!episodeId);
 
@@ -111,6 +114,11 @@ export default function TraceViewerPage() {
   const prevStatus = useRef<{ key: string; status: string | null }>({ key: '', status: null });
   const refreshEvents = events.refresh;
   const reloadRun = runDetail.reload;
+  const prevVideoPending = useRef<{key:string;pending:boolean}>({key:'',pending:false});
+  useEffect(() => {
+    if (prevVideoPending.current.key === epKey && videoCopyFinished(prevVideoPending.current.pending, videoPending)) refreshEvents();
+    prevVideoPending.current = {key:epKey,pending:videoPending};
+  }, [epKey,videoPending,refreshEvents]);
   useEffect(() => {
     const prev = prevStatus.current;
     if (prev.key === epKey && prev.status === 'running' && status !== null && status !== 'running') {
@@ -197,9 +205,12 @@ export default function TraceViewerPage() {
   const [focus, setFocus] = useState<RangeFocus | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [playbackEventId, setPlaybackEventId] = useState<string | null>(null);
-  const videos = useMemo(() => runId ? trialVideos(runId,
-    runnerRecordFor(runnerRecords ?? [], episodeKeyOf(model.episodeStart ? dataOf(model.episodeStart, 'episode_start') : null, summary.data, startWall)),
-    config.data?.runner_roots ?? []) : [], [runId, runnerRecords, model.episodeStart, summary.data, startWall, config.data]);
+  const videos = useMemo(() => {
+    if (!runId || !ep) return [];
+    const match = runnerRecords?.length ? runnerRecordFor(runnerRecords,
+      episodeKeyOf(model.episodeStart ? dataOf(model.episodeStart, 'episode_start') : null, summary.data, startWall)) : null;
+    return videosForEpisode(ep, model, match, config.data?.runner_roots ?? []);
+  }, [runId, ep, runnerRecords, model, summary.data, startWall, config.data]);
 
   // Live mode: follow the newest event.
   useEffect(() => {
@@ -276,6 +287,7 @@ export default function TraceViewerPage() {
     if (events.error) return { text: `取得エラー: ${events.error}`, tone: 'red' };
     if (events.replaced && events.loading) return { text: 'events.jsonl が置き換えられたため読み直し中', tone: 'amber' };
     if (events.loading) return { text: '読み込み中', tone: 'gold' };
+    if (videoPending) return { text: videoCopyMessage(summary.data) ?? '動画を保存中', tone: 'gold' };
     if (graceOn) return { text: `終了後に届くイベントを確認中（最長 ${GRACE_MAX_MS / 1000} 秒）`, tone: 'gold' };
     if (running && live) return { text: `ライブ更新中（約1秒ごと）${events.lastFetch ? ` · ${fmtClock(events.lastFetch)}` : ''}`, tone: 'gold' };
     if (running && !live) return { text: '更新停止中（Browse。状態は 5 秒ごとに確認）', tone: 'neutral' };
@@ -283,7 +295,7 @@ export default function TraceViewerPage() {
     if (status === 'unscoped') return { text: '自動更新なし（「更新」で再取得）', tone: 'neutral' };
     if (status) return { text: '更新停止（エピソード終了）', tone: 'neutral' };
     return { text: '更新停止', tone: 'neutral' };
-  }, [events.error, events.loading, events.replaced, events.lastFetch, graceOn, running, live, status]);
+  }, [events.error, events.loading, events.replaced, events.lastFetch, graceOn, running, live, status, videoPending, summary.data]);
 
   // Resizable panes (sizes are a per-viewer convenience kept in localStorage).
   const [leftWidth, setLeftWidth] = useStoredState<number>('capx-trace-left-width', 460);
@@ -325,7 +337,9 @@ export default function TraceViewerPage() {
   const showLegacy = !ep && legacyRun && legacyTrial;
   const simple = !detailed && !showLegacy;
   const simpleMatch = runnerRecordFor(runnerRecords ?? [], episodeKeyOf(model.episodeStart ? dataOf(model.episodeStart, 'episode_start') : null, summary.data, startWall));
-  const simpleOutcome = running ? '実行中' : simpleMatch.isFinal && !simpleMatch.unverified && simpleMatch.record?.outcome?.task_success === true ? '成功' : simpleMatch.isFinal && !simpleMatch.unverified && simpleMatch.record?.outcome?.task_success === false ? '未達成' : '結果未確認';
+  const simpleOutcome = headerVerdict(running, simpleMatch, summary.data,
+    model.episodeStart ? dataOf(model.episodeStart, 'episode_start').source : null,
+    runDetail.data !== null, runnerRecords?.length ?? 0);
 
   // Font ligatures are off: the viewer shows recorded text as it was sent ("->" must not
   // turn into an arrow, "!=" into "≠").
@@ -335,6 +349,7 @@ export default function TraceViewerPage() {
         <span className="font-semibold">{simple ? '実験を見る' : '実験の詳細'}</span>
         {simple && ep && <><span className="text-sm text-text-secondary">{summary.data?.task ?? ''} · {summary.data?.condition ?? ''}</span><span className="text-sm text-accent">試行全体の最終結果：{simpleOutcome}</span></>}
         {simple && summary.data?.trace_complete === false && <span className="text-sm text-amber-200">記録に欠落があります</span>}
+        {videoPending && <span className="text-sm text-amber-200">{videoCopyMessage(summary.data)}</span>}
         <div className="ml-auto flex gap-2">
           <SmallButton onClick={() => setPickerOpen(true)}>試行を選ぶ</SmallButton>
           <SmallButton onClick={() => setParams({view: detailed ? null : 'details'})}>{detailed ? 'シンプル表示に戻る' : '詳細を見る'}</SmallButton>

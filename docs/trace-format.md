@@ -1,8 +1,8 @@
 # CaP-X trace format and viewer
 
-This specification describes the trace format consumed by the public viewer. The viewer code was extracted from a CaP-X-based code base derived from [capgym/cap-x](https://github.com/capgym/cap-x) (MIT, Copyright (c) 2026 Max Fu). The recorder and experiment runner that write this format are not published at the time of writing. `scripts/make_demo_trace.py` creates a synthetic trace in the same format that anyone can open. The following sections describe recorded behavior and the public viewer.
+This specification describes the public CaP-X trace recorder and viewer. The recorder observes [capgym/cap-x](https://github.com/capgym/cap-x) and leaves its source unchanged. `scripts/make_demo_trace.py` creates a synthetic trace in the same format.
 
-Section numbers follow the recorder specification. Its sections 1, 3, 7, and 10–12 are omitted here because they describe unpublished recorder and runner implementation.
+Section numbering starts at 2 so that section references in code and tests stay valid.
 
 ## Hook ids
 
@@ -13,7 +13,7 @@ Recorded traces identify recorder hooks by these ids. The short names below are 
 | H1 | HTTP hook | Model HTTP attempts, including service and perception requests. |
 | H2 | trial role hook | Model roles, call kinds, turns and task text in a trial. |
 | H3 | model call hook | Logical model calls, streamed responses and preflight requests. |
-| H4 | trial lifecycle hook | Batch episode start and end, evaluator results. |
+| H4 | trial lifecycle hook | Batch episode start and end, evaluator results, and `trial_videos` after completed upstream trials. |
 | H5 | feedback hook | Feedback assembled for a later model turn. |
 | H6 | output parser hook | The harness's reading of model output. |
 | H7 | environment hook | Code blocks, streams, observations, video reads and resets. |
@@ -31,9 +31,51 @@ Recorded traces identify recorder hooks by these ids. The short names below are 
 
 The trace recorder observes a trial without changing its model inputs, results, simulator state, exceptions, or timing. API wrappers call the original method once and return the original object or raise the original exception. Hooks do not add simulator calls. The trial thread queues small summaries; a writer thread processes payloads and files.
 
-The recorder avoids printing, logging, Python warnings, and changes to randomness. It hides recorder frames from tracebacks that the model may receive. It keeps HTTP headers, launch arguments, and environment dumps out of traces. It redacts known secret fields and URL credentials before storage. Prompts, model replies, stdout, stderr, and images can still contain secrets, so protect the trace root.
+The recorder avoids printing, logging, Python warnings, and changes to randomness. Only a startup-hook failure prints one short line to stderr. It hides recorder frames from tracebacks that the model may receive. It keeps HTTP headers, raw launch arguments, and environment dumps out of traces. It records configured model names and endpoint host/port from launch arguments. It redacts known secret fields and URL credentials before storage. Prompts, model replies, stdout, stderr, and images can still contain secrets, so protect the trace root.
 
 When tracing is disabled, the recorder installs no hooks. Failed writes, dropped events, late events, and failed hook installs count as gaps. A trace is complete only when its episode ends without gaps.
+
+## 3. Enable recording
+
+Install this distribution in the same Python environment that runs CaP-X. The `.pth` hook (a `.pth` file that Python runs at startup) activates before CaP-X imports in every process, including spawned workers.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CAPX_TRACE_DIR` | unset (off) | Trace root; setting it turns tracing on. A relative path is resolved against the working directory, and the absolute path is written back to `os.environ`, so spawned workers use the same root. |
+| `CAPX_TRACE_PROXY_PORTS` | `8110` | Comma-separated loopback ports treated as possible proxy endpoints. Requests to these ports get the viewer's proxy note. An empty value turns this guess off. Entries that are not a port number from 1 to 65535 are ignored and listed in `settings.problems`; if none remain, no port is treated as a proxy. |
+| `CAPX_TRACE_RUN_ID` | derived | Run id (section 4.2). |
+| `CAPX_TRACE_FRAME_FPS` | `4` | Maximum number of periodic frames saved per wall-clock second from the video frame buffer. `0` saves key frames only. |
+| `CAPX_TRACE_JPEG_QUALITY` | `85` | JPEG quality of saved buffer frames. Images sent to a model are stored as sent and never re-encoded. |
+| `CAPX_TRACE_STATE` | `1` | Turns on ground-truth state snapshots around code blocks and top-level API calls (section 8.4). An empty value, `0`, `false`, `no` or `off` turns them off. |
+| `CAPX_TRACE_MIN_FREE_GB` | `2` | When free disk space falls below this value, the recorder skips binary files (frames, images, arrays, videos). Below half of it, the recorder writes one final `disk_low` marker and then stops writing. |
+| `CAPX_TRACE_MAX_QUEUE_MB` | `512` | Maximum total size of the binary copies that wait in the writer queue (section 4.3). |
+| `CAPX_TRACE_VIDEO_FILE_MB` | `256` | Maximum size of each upstream trial MP4 copied into an episode. The default limits one copy on the writer thread to 256 MiB and still fits short trial videos. The recorder skips larger files and writes a warning. `0` turns copying off and writes one warning per episode. |
+| `CAPX_TRACE_ARRAY_CALL_MB` / `CAPX_TRACE_ARRAY_EPISODE_MB` | `64` / `2048` | Size limits for the array copies taken at call time, per call and per episode. Past the limit, the recorder keeps only the shape, dtype and a bounded hash (section 5.3). |
+
+A value that is not a number, is NaN or infinite, or is below 0 (below 1 for the JPEG
+quality) falls back to the default and is listed in
+`episode_start.data.tracer.settings.problems`. A JPEG quality above 100 becomes 100 and is
+listed as well. KB, MB and GB in these variable names and in the rest of this document
+are binary units: 1 KB is 2^10 bytes, 1 MB is 2^20 bytes and 1 GB is 2^30 bytes.
+
+The recorder also sets two variables itself for the processes it spawns:
+`CAPX_TRACE_FALLBACK_RUN_ID` (the fallback run id of section 4.2) and
+`CAPX_TRACE_RUNNER_RUN_DIR` (the runner's run directory, exported by H15).
+
+If the imported CaP-X package has a `capx/tracing` directory (its own bundled recorder), the public recorder stays inactive and leaves the bundled recorder untouched. When CaP-X has no bundled recorder, the public recorder activates. The recorder makes this choice at the first CaP-X import, or at activation if CaP-X is already imported.
+
+For a uv-managed CaP-X checkout, run:
+
+```sh
+uv pip install --python .venv/bin/python /path/to/capx-trace-viewer
+.venv/bin/python -m capx_trace_recorder install-pth
+export CAPX_TRACE_DIR=./traces
+uv run --no-sync --active capx/envs/launch.py --config-path /path/to/config.yaml
+```
+
+For a pip-managed environment, run `python -m pip install /path/to/capx-trace-viewer` and `python -m capx_trace_recorder install-pth` with that environment's interpreter. `status` reports the interpreter, the hook path, and its state. Run `uninstall-pth` before removing the package. After `uv sync`, or after changing the package layout of an editable install, reinstall this distribution and its hook. A leftover `.pth` file does nothing while tracing is off.
+
+To trace a single process, use `python -m capx_trace_recorder run -m module [args...]` or `python -m capx_trace_recorder run script.py [args...]`. This launcher adds runpy frames to printed stack traces, so use the `.pth` hook for experiments that compare model inputs. Hooks patch functions in the modules that define them and leave globals in `__main__` unchanged. When `CAPX_TRACE_DIR` is exported, every other Python process in that environment also registers the CaP-X import check, except viewer-only servers. Only a startup-hook failure prints one short line to stderr.
 
 ## 4. Storage
 
@@ -41,6 +83,8 @@ When tracing is disabled, the recorder installs no hooks. Failed writes, dropped
 
 ```
 <CAPX_TRACE_DIR>/                           # the trace root
+  recorder_status.<pid>.json                # active public recorder after CaP-X import; absent when it stands down
+  recorder_warnings.<pid>.jsonl             # H4 install failures before any episode opens
   <run_id>/
     run.json                                # created once with O_EXCL, never replaced
     runner_records.jsonl                    # redacted copies of the runner's trial records (runner parent process)
@@ -55,6 +99,9 @@ When tracing is disabled, the recorder installs no hooks. Failed writes, dropped
       payloads/<event_id>.response.json
       payloads/<event_id>.feedback.json
       frames/<camera>/e<epoch>_<buffer_index>.jpg
+      videos/video_turn_NN.mp4             # completed upstream trial videos copied by H4
+      videos/video_combined.mp4
+      videos/video_combined_<camera>.mp4
       assets/<sha256[:2]>/<sha256>.<ext>    # png, jpg, mp4, npy, npz, txt.gz, json.gz, ...
 ```
 
@@ -66,13 +113,14 @@ It is a different file from the runner's own `run.json` in the runner's output d
 `episode.json` holds the episode's current state: `status` (`running` until
 `episode_end` is written, then `ended`), `episode_end_written`, `trace_complete` (null
 until the end), `gaps`, `dropped_events`, `late_events`, `n_warnings`, `n_events`,
-`last_seq`, `events_bytes`, `heartbeat_interval_s`, `updated_wall_time` and `host`; the
+`last_seq`, `events_bytes`, `heartbeat_interval_s`, `updated_wall_time`, `host`, and
+`video_copy_pending`; the
 start fields (`source`, `task`, `condition`, `seed`, `attempt_index`,
 `runner_invocation`, `condition_label`, `models`, `config_flags`, `env`,
 `started_wall_time`, `pid`); after the end, `ended_wall_time`, `end_reason`,
 `duration_s`, `alarm_seen`, `n_code_blocks`, `n_model_calls`, `n_http_attempts`,
 `tracer_overhead_s`, `harness_summary` and `exception`; and, where they apply,
-`hooks_installed_during_episode` and `apis_wrapped` (the hook metadata).
+`hooks_installed_during_episode`, `hooks_skipped_during_episode` and `apis_wrapped` (the hook metadata).
 
 Events that belong to no episode go to the unscoped log of their run. Their files are in
 `unscoped.<pid>.files/`, and their artifact paths are relative to the run directory.
@@ -147,15 +195,26 @@ videos inside the request, which counts one gap.
 Episode end. The batch trial lifecycle hook (H4) or the web trial hook (H13) queues `episode_end` and
 returns. When the writer reaches `episode_end`, it fills in `trace_complete`, `gaps`,
 `dropped_events`, `late_events` and `n_warnings`, writes the line, rewrites
-`episode.json` with `status: "ended"` and stops refreshing the heartbeat.
+`episode.json` with `status: "ended"` and stops its regular heartbeat updates.
+During a later video copy, the writer refreshes the heartbeat between 1 MiB chunks
+about every 10 seconds while data arrives.
 
 `trace_complete` is true only when `gaps` is empty. `gaps` lists `{code, count, first_seq}`
 for each kind of counted problem: dropped or late events, failed writes, files skipped for
 low disk space or for the queue budget, hooks that failed to install (at episode start or
 while the episode was open), request bodies that could not be parsed or rebuilt, recorder
 errors, events that could not be given to one episode, state snapshots that could not be
-taken, arrays over the array budget, and the recorder's path in a block's output. Every
+taken, arrays over the array budget, unsafe artifact paths (`unsafe_path`), and the recorder's path in a block's output. Every
 `trace_warning` counts as a gap unless it carries `counts_as_gap: false`.
+
+H4 queues a pending marker, used only inside the writer, before `episode_end`, and
+queues `trial_videos` after it. `episode.json` has `video_copy_pending: true` while the
+copy runs and false after `trial_videos` is written. If the writer is interrupted, the
+marker stays true. The recorder itself emits `trial_videos`, and the writer treats it as
+part of normal completion: it does not set `late` or count a gap. The reader accepts
+`trial_videos` after the end and reads its artifacts. After the copy, `trace_complete`
+in `episode.json` takes precedence over the value in the earlier `episode_end` event.
+A failed copy updates `episode.json` with one gap for that file.
 
 Late events. An episode stays reachable after `episode_end`, because the objects bound to
 it (its env, its low-level env and the web UI's launch arguments) keep pointing to it
@@ -184,6 +243,10 @@ that episode; one that fails for `run.json` or `runner_records.jsonl` leaves a
 `write_failed` warning in the run's unscoped log. Lines that the unscoped log itself cannot
 take are counted in `unscoped.<pid>.status.json` next to it, and the viewer lists that
 count with the log.
+
+A failure to read a source video counts as a `read_failed` gap in the episode. This
+gap is separate from the `write_failed` gaps for failures to write the destination file.
+The skipped artifact records `read_failed: <type>`.
 
 ### 4.5 Readers
 
@@ -246,9 +309,42 @@ merges it back when a pane needs the event (section 9.3).
   bound;
 - `frames`: whether the frame hook (H10) was installed, its buffers and cameras, and how many buffer frames
   were already there;
-- `tracer`: `version`, `settings`, `hooks_installed`, `hooks_failed`;
+- `tracer`: `version`, `settings`, `hooks_installed`, `hooks_skipped`, `hooks_failed`; required hook failures count as gaps;
 - `output_dir`, `host`, `python`, `git_commit`, `process_start_time` (from
   `/proc/<pid>/stat`), and `web_session_id` for the web UI.
+
+`git_commit` is the commit of the CaP-X checkout from which the loaded `capx`
+package came. It is null when that package has no Git checkout.
+
+`trial_videos` follows `episode_end` for completed upstream trials that have
+`record_video: true`, no exception or timeout, and a `code_path`. Fork runner episodes
+(`source: experiments.run`) use their runner artifacts instead. The event's `artifacts`
+list holds the copied trial MP4 files. Each written video has `path` relative to the
+episode (`videos/<original name>`), `bytes`, `sha256`, `mime: video/mp4`,
+`written: true`, and `turn_index` parsed from `video_turn_NN` (null for combined videos).
+
+The writer accepts a turn file only when two checks pass. Its number must be below the
+episode's code block count. Its modification time must be no earlier than the final
+`code.py` modification time minus 5 seconds; `code.py` and the videos share a filesystem
+clock. If `code.py` cannot be stat'ed, the writer uses the episode start wall time minus
+5 seconds instead. This rule excludes files left by a run minutes earlier and still
+allows for timestamp rounding and short write delays. Combined files must pass the same
+time rule.
+
+For each accepted file, the writer opens the source without following symlinks, applies
+the per-file size cap, and checks that free space after the copy stays above the
+disk-low threshold. It copies in 1 MiB chunks and then renames the copy into place
+atomically. The queue budget does not apply to these copies, which the writer makes
+itself. Missing videos and stale files produce warnings but no gaps. Each attempted copy
+that fails counts one gap.
+
+Limits. The copy runs on the single writer thread. Very large videos on a slow disk can
+delay later events. In a sequential run, they can also bring the next episode closer to
+`queue_full`. If the copy is interrupted, `videos/.video_*.tmp.*` files may remain, the
+pending marker stays true, and the viewer reports that the videos may not have been
+saved. The viewer keeps polling while the copy is pending and the heartbeat is fresh. It
+reads the summary every 20 seconds once the heartbeat is two minutes old and the
+copy may have been interrupted. It reads events again when the pending marker clears.
 
 `episode_end`:
 
@@ -296,8 +392,8 @@ fragment, `host`, `port`, `path`, `known_proxy`), `stream` and `body_type`. The 
 `input`), `n_messages`, `images`, `n_images`, `n_videos` and `input_summary` (section 6).
 
 `model_response`: `role`, `call_kind`, `logical_call_id`, `http_attempt`, `http_status`,
-`latency_s` (the HTTP round trip, which includes retries that the local LLM proxy on port
-8110 makes inside one attempt, section 6.5), `streamed`, `n_chunks`, `ttft_s`, `content`
+`latency_s` (the HTTP round trip, including any proxy retries within one attempt;
+section 6.5), `streamed`, `n_chunks`, `ttft_s`, `content`
 (the full text), `reasoning`, `usage`, `finish_reason`, `response_model`, `response_id`
 and `payload_path`.
 `reasoning` is `{text, field}` and is present only when the API returned it in
@@ -407,7 +503,7 @@ with label `debug_frame`.
 `task_completed`, `terminated`, `truncated` and `source` (`CodeExecutionEnvBase.step`, or
 the `TrialSummary` returned by the harness). It holds only values the harness computed.
 
-`trace_warning`: `code`, `message` and `related_event_id`. The codes are `write_failed`,
+`trace_warning`: `code`, `message` and `related_event_id`. The codes are `write_failed`, `read_failed`,
 `disk_low`, `queue_full`, `dropped_events`, `hook_install_failed`, `payload_unparsed`,
 `array_budget`, `tracer_frame_visible`, `ambiguous_episode`, `internal_error`,
 `stale_context` and `state_unavailable`. `stale_context` reports context entries that an
@@ -420,6 +516,15 @@ Warnings can also carry `writer_generated` (found by the writer), `counts_as_gap
 error or an interrupted start written to the unscoped log), `file` and `count` (write
 failures), `when` and `removed` (`stale_context`), and `message_redacted`. `late_event`
 appears only as a gap code: late events carry `late: true` instead of a warning.
+`video_missing` means upstream produced no matching MP4 files or no trial directory.
+`video_skipped` names a file and its reason (`stale`, `turn_index_out_of_range`,
+`not_regular`, `unsupported_platform`, `disk_low`, or
+`write_failed`, `read_failed: <type>`). `video_size_limit` names an oversized file, or
+reports that `CAPX_TRACE_VIDEO_FILE_MB=0` disabled copying (one warning per episode).
+The recorder writes `disk_low` once per episode even if several videos cannot be copied. These warnings carry
+`counts_as_gap: false`. Each attempted copy that fails adds one gap on its own.
+The `turn_index_out_of_range` and `unsupported_platform` reasons also produce warnings
+without gaps.
 
 `runner_records.jsonl`, written by the runner record hook (H16), holds a copy of every record that the experiment runner
 appends to its `trials.jsonl`, so the viewer can show the runner's verdict (attempt
@@ -534,7 +639,9 @@ files with their own labels.
 
 Masking of payloads. The recorder masks the values of these key names, compared exactly and
 case-insensitively: `api_key`, `apikey`, `x-api-key`, `authorization`, `access_token`,
-`refresh_token`, `id_token`, `token`, `client_secret`, `secret`, `password`. Only whole
+`refresh_token`, `id_token`, `token`, `client_secret`, `secret`, `password`,
+`api-key`, `x-goog-api-key`, `aws_secret_access_key`, `private_key`,
+`auth_token`, `session_token`, `passwd`. Only whole
 names match, so the recorder keeps `max_tokens`, `max_completion_tokens` and
 `budget_tokens`. It replaces the whole value by `"***masked***"` whatever its type, and it
 moves nothing below a masked key to an asset or lists it as an external URL.
@@ -568,7 +675,8 @@ trial ids, digests, code and prose outside these rules are stored as they are.
   `Authorization` header) becomes `***redacted***`.
 - API keys of known formats become `***redacted***`: OpenAI (`sk-`), Google (`AIza`),
   GitHub (`ghp_`, `gho_`, `ghs_`, `github_pat_`), Hugging Face (`hf_`), Slack (`xoxa-`,
-  `xoxb-`, `xoxp-`, `xoxr-`) and AWS (`AKIA`, `ASIA`).
+  `xoxb-`, `xoxp-`, `xoxr-`), AWS (`AKIA`, `ASIA`), Groq (`gsk_`),
+  xAI (`xai-`), Replicate (`r8_`), and PEM private-key blocks.
 - The value of each secret key name listed above becomes `***masked***`. The name counts
   when a separator (`:` or `=`) follows it, with any whitespace, line breaks included, on
   either side. The name may be quoted, the index of a subscript
@@ -687,13 +795,206 @@ coordinates. When no later code-generator request exists, it shows
 
 ### 6.5 What the recorded body shows
 
-The body is what the runner that wrote the trace sent to the endpoint. On the Gemini route the endpoint is a local
-proxy, which rebuilds the request: it
-strips model name prefixes, drops unknown fields (for example Claude's `thinking`), fills
-in `temperature=0.2` and `max_tokens=256` when they are missing, and may retry an HTTP 429
-inside one client attempt. The viewer shows a note saying so for every request whose
-`endpoint.known_proxy` is true, that is, a loopback host on port 8110. The local vLLM route
-(:8120) has no proxy.
+The body is what the CaP-X client sent to the endpoint. Upstream CaP-X includes an
+OpenRouter proxy in `capx/serving/openrouter_server.py`. Its request model defaults to
+`temperature=0.2` and `max_tokens=256`. The proxy strips an `openrouter/` model prefix and
+forwards the request to OpenRouter. Its Pydantic request model drops unknown request
+fields by default and rejects message content items other than `text` and `image_url`.
+The OpenAI SDK client retries 429 and 5xx responses within one client attempt using its
+default `max_retries`. For non-streaming replies, the proxy rebuilds the response without
+`usage` and `reasoning`. The recorded body is the request before any proxy
+changes. `endpoint.known_proxy` is a guess: it is true for a loopback host on a port
+listed in `CAPX_TRACE_PROXY_PORTS` (default `8110`), and the viewer then shows a proxy
+note. If a different service listens on that port, the note may not apply to it. Set
+the variable to an empty string to turn the note off.
+
+## 7. Hook installation and compatibility
+
+The recorder installs hooks after each target module loads. A missing required symbol or an invalid callable goes in `hooks_failed` and counts as a trace gap. Only symbols explicitly listed as optional in `bootstrap.OPTIONAL_SYMBOLS` go in `hooks_skipped`; the upstream target modules currently have no such omissions. The recorder attempts an install only for modules that are imported. If H4 cannot install, `recorder_warnings.<pid>.jsonl` at the trace root explains why no episodes were recorded.
+
+### 7.1 Table
+
+`capx_trace_recorder/bootstrap.py` installs hooks when tracing is on. Each install
+checks that the target exists and has the expected shape. A missing required symbol or
+an incompatible callable goes in `hooks_failed`. If the optional H2 target
+`_patch_libero_goal` is missing (upstream 53e9966 defines it), it goes in `hooks_skipped`. Wrappers carry `__capx_trace_wrapper__ = True` and are
+never applied twice to the same callable.
+
+| Id | Target | How | Records |
+|---|---|---|---|
+| H1 | `requests.sessions.Session.send` | class attribute wrapper | `model_request`, `model_response`, `model_error` per HTTP attempt; the HTTP attempts of service calls; Molmo requests and their logical calls |
+| H2 | `capx.envs.trial`: `_describe_initial_scene`, `_get_visual_differencing_feedback`, `_get_video_differencing_feedback`, `_query_initial_code`, `_handle_multi_turn_step`, `_patch_libero_goal` | module attribute rebinding (the trial loop calls them as module globals); the module's aliases of H3, H5, H6 and H12 targets are rebound as well | role context (`role`, `call_kind`, `turn_index`); the task text after `_patch_libero_goal` |
+| H3 | `capx.llm.client`: `query_model`, `query_model_streaming`, `query_model_ensemble`, `query_single_model_ensemble` and the module's own underscore aliases | rebinding in the defining module (callers bind their aliases at import, after the patch) | logical calls (the only place a `logical_call_id` is created for code-generation and VDM calls); ensemble member and synthesis roles; streamed responses; preflight requests; `task_text` |
+| H4 | `capx.envs.trial._run_single_trial`, also rebound in `capx.envs.runner` | rebinding before `capx.envs.runner` and `capx.experiments.run` import it; the first four parameters must be `env, trial, args, config` | `episode_start`, `episode_end`, the episode's `evaluator_result`, and `trial_videos`; copies completed upstream trial MP4 files from the returned `code_path` directory; installs H10 on the env before the original resets it |
+| H5 | `capx.utils.launch_utils`: `_build_multi_turn_decision_prompt`, `_build_multi_turn_decision_prompt_legacy` | rebinding | `feedback_built` |
+| H6 | `capx.utils.launch_utils`: `_parse_multi_turn_decision`, `_extract_code` | rebinding | `model_output_parsed` |
+| H7 | `CodeExecutionEnvBase`: `step`, `_exec_user_code`, `render`, `render_wrist`, `get_video_frames_range`, `get_wrist_video_frames_range`, `reset` | class attribute wrappers | `code_block_start`, `code_block_end`, `stdout`, `stderr`, the block's `evaluator_result`, `observation_snapshot`, `video_frames_read`, `env_reset`; binds a web UI env to its episode; installs H8 and H9 at the first `step` of an env in an episode |
+| H8 | the public API methods that `api.functions()` returns | instance attributes `types.MethodType(functools.wraps(fn.__func__)(traced), fn.__self__)` | `api_call_start`, `api_call_end`, `api_call_error`, including nested `self.x()` calls |
+| H9 | the service closures on API instances that exist among `sam3_seg_fn`, `sam3_point_prompt_fn`, `sam2_seg_fn`, `sam2_point_prompt_fn`, `owl_vit_det_fn`, `molmo_point_fn`, `grasp_net_plan_fn`, `grasp_net_plan_point_clouds_fn`, `ik_solve_fn`, `trajopt_plan_fn` | instance attribute replacement | `service_call_start`, `service_call_end`, `service_call_error` |
+| H10 | the low-level env's `_record_frame` | instance attribute wrapper, installed at episode start (web UI: when the env is bound) | buffer index to `sim_step`; `frame` events |
+| H11 | `traceback.walk_tb`, `traceback.walk_stack`, `traceback._walk_tb_with_full_positions` (Python 3.11+) | module attributes of the stdlib `traceback` module | recorder frames hidden from printed tracebacks and stacks (section 7.4) |
+| H12 | `capx.utils.video_utils._encode_video_base64` | rebinding in the defining module | the frame hashes of each VDM video, matched to `video_frames_read` |
+| H13 | `capx.web.async_trial_runner.run_trial_async` (an async wrapper); the web runner's aliases `_query_model` (VDM calls) and `_query_model_streaming` (code generation); `SessionManager.inject_prompt` and `stop_session` in `capx.web.session_manager` | rebinding in the defining modules | web UI episodes and their roles, user feedback, `end_reason` |
+| H14 | `capx.integrations.vision.molmo._parse_points` | rebinding | Molmo's reply as parsed (`model_output_parsed`); closes the object's logical call |
+| H15 | `capx.experiments.manifest.load_manifest`, `capx.experiments.revision.fingerprint` | rebinding in the defining modules (`run.py` binds `load_manifest` at import, after the patch, and calls `revision.fingerprint` as a module attribute) | adds the `tracing` fingerprint part; learns the run id and run directory and exports `CAPX_TRACE_RUN_ID` and `CAPX_TRACE_RUNNER_RUN_DIR` before the preflight and the workers start |
+| H16 | `capx.experiments.records.append_jsonl`, for the runner's `trials.jsonl` only | rebinding | `runner_records.jsonl` |
+
+Install order. H11 is installed first and runs a self-test (section 7.4). H1, H4 and H7
+put recorder frames on the stack while generated code runs, and so do H8, H9 and H10,
+which H4 and H7 install later. The bootstrap installs these hooks only when the H11
+self-test passed. Otherwise it records each of them in `hooks_failed`.
+
+Hooks that fail. A public function that H8 cannot wrap, or a service closure that H9
+cannot replace, makes the install partial. The episode records a partial install as
+`hook_install_failed`, which is a gap. In the web UI server the trial module and the env
+classes are first imported inside an episode, so the bootstrap installs H2, H4 and H7
+while that episode is open. It adds such installs to `episode.json` as
+`hooks_installed_during_episode` and turns a failure into a `trace_warning` with
+`during_episode: true`. In the experiment runner the recorder also writes each hook
+failure once to the run's unscoped log (`run_level: true`), no later than the moment H15
+learns the run id. When H4 has failed, the recorder labels the runner's requests `unknown`
+instead of `preflight`, because they cannot be told apart from trial requests.
+
+`episode.json` also records `apis_wrapped`: for each API instance of the env, the
+wrappers present on it now (`wrapped`, `services`), whether they were installed in this
+episode (`installed_in_this_episode`), and the functions skipped. An env reused across a
+worker's episodes keeps the wrappers of its first episode.
+
+Interrupted starts. H4 and H13 run these steps as one unit with its own cleanup: open the
+episode, bind its objects, queue `episode_start`, and push the episode on the thread. If
+an alarm or a recorder error interrupts that unit, the cleanup removes the episode from
+the set of open episodes, from the thread's stack, from its env, low-level env and
+launch-argument bindings, and from the web session table. The H10 hook also stops copying
+frames for it. When its `episode_start` may already be queued, the recorder ends the episode (`end_reason` `timeout_alarm`, `error` or
+`exception`) with an `end_note`. After a recorder error the trial runs untraced. After an
+alarm, or another exception that is not a subclass of `Exception`, the recorder runs this cleanup
+inside `guard()` and then re-raises the original exception before the trial starts. A
+failure inside the cleanup becomes an `internal_error` warning, and the original exception
+still propagates. A recorder error, or an alarm that came before anything was queued, also
+writes an `internal_error` warning with `outside_episode: true`, `episode_id`, `alarm` and
+`note` to the run's unscoped log.
+
+### 7.2 API wrapping (H8)
+
+`combined_doc()` loops over `self.functions()`, which returns `self.<name>` bound methods,
+and writes `name + str(inspect.signature(fn))` and `inspect.getdoc(fn)` for each. Wrappers
+installed as instance attributes of the `MethodType` form keep both values identical,
+including inherited docstrings. A plain function wrapper would lose them. For each API
+instance the recorder computes `combined_doc()`, installs the wrappers and computes it
+again. If the two results differ in any way, it removes the wrappers from that instance and
+records `hook_install_failed`. The CaP-X integration test checks each concrete `ApiBase` subclass available in that environment.
+
+Each thread keeps a stack of open API calls. `depth` is the number of open API calls, and
+`parent_event_id` is the innermost open call, or the code block for depth 0. H8 wraps only
+the methods listed in `functions()`. A depth-0 call records the call site, key frames, a
+ground-truth state snapshot and the offsets of the buffers that capture stdout and stderr
+during `exec`. The wrapper summarises the arguments before the call and the return value
+right after it. For an `api_call_error`, the trial thread keeps the traceback as
+`(filename, lineno, name)` for each frame outside the recorder. The writer then looks up
+the source lines and formats the text. This way `linecache` never runs on the trial
+thread, where its `except OSError` could swallow the alarm.
+
+### 7.3 Episode and role lookup
+
+Only the H3 wrappers create logical model calls, except for Molmo, where H1 creates one per
+object and H14 closes it. The H2 and H13 wrappers set the role context (`role`,
+`call_kind`, `turn_index`) in per-thread state and clear it when the wrapped function
+returns or raises. Ensemble members run on a `ThreadPoolExecutor` in
+`query_model_ensemble` and `query_single_model_ensemble` in `capx/llm/client.py`. The web runner runs its env on an executor thread (`async_trial_runner.py:143`)
+and streams code generation on others (`:364` and `:710`). None of these threads inherits
+the context. The H3 wrapper therefore takes the role from the first source that applies:
+the thread's own role stack; the episode's current role, which the caller set before the
+pool started; `preflight` in the experiment runner before any episode (when H4 is
+installed); and otherwise `unknown`.
+
+An event with no enclosing context of its own finds its episode by these steps; the first
+one that gives an answer wins:
+
+1. the web UI episode of the current `contextvars` context, which H13 sets and which
+   reaches `asyncio.to_thread` workers (VDM calls) but not `run_in_executor` threads;
+2. the thread's own episode stack, which H4 pushes on the trial thread;
+3. the innermost open context of the thread (code block, API call, logical model call,
+   service call), each of which carries its episode;
+4. the binding of a known object: the env or its low-level env (bound by H4 and H7), or the
+   web runner's launch arguments (bound by H13). A binding outlives its episode, so events
+   from the env of an ended episode go to that episode as late events. When an object was
+   bound to a newer episode after a thread last used it, a thread started for one job keeps
+   its events on the older episode. On a pool worker, the main thread or a thread of
+   unknown kind, the event is ambiguous (`_bound_episode` in `capx_trace_recorder/context.py`);
+5. an open web UI episode whose session holds the env (`session.env`), so that the env of
+   each web trial is bound to its own episode even while two web episodes are open;
+6. the single open episode of the process.
+
+With more than one candidate, a model call (H3) and its HTTP attempts go to the unscoped log
+of the first candidate's run, and every other event is dropped. Each candidate episode
+counts one `ambiguous_episode` gap per such event or model call, and one explaining warning
+per (hook, run, candidates) goes to the run's unscoped log and to each candidate. The
+warning's text says "were not recorded" for every hook, although for H3 the calls are in
+the unscoped log. A model call with no candidate episode is recorded only in the experiment
+runner's parent process, in the run's unscoped log (the preflight, for example).
+
+H13 wraps the web runner's `_query_model_streaming` as a generator (`yield from`). It
+sets the context in the iterating thread for the whole iteration, and the H3 wrapper
+inside it records `model_response` from the `done` chunk (content, reasoning, `n_chunks`,
+`ttft_s`), or `model_error` with the partial text on an exception or `GeneratorExit`.
+
+The wrappers push each context as the first statement inside their own `try` and pop it
+in its `finally`, so an alarm cannot leave one behind between the push and the `try`, or
+after the original returned. H4 clears whatever is still on the trial thread when an
+episode starts or ends, records it as `stale_context`, and ends an episode that an
+interrupted exit path left open (`end_reason: error`, with an `end_note`). An alarm that
+lands after the original `_run_single_trial` returned still ends the episode, as
+`timeout_alarm`, before the `TimeoutError` leaves H4.
+
+### 7.4 Traceback protection (H11)
+
+Sandbox tracebacks and stacks printed through the `traceback` module must be the same as
+without the recorder, whoever prints them: `base.py:178`, generated code with its own
+`import traceback`, `two_arm_lift.py` (a function-local import), or `logging`. H11 replaces
+`walk_tb`, `walk_stack` and, on Python 3.11+, `_walk_tb_with_full_positions` in the stdlib
+`traceback` module with generators that skip the frames of recorder code (module name `capx_trace_recorder` or below, or a file under `capx_trace_recorder/`). All formatting functions
+(`print_exc`, `format_exc`, `print_exception`, `TracebackException`, `extract_tb`,
+`print_stack`, `extract_stack`) take their frames from these generators, so `limit` counts
+the same frames as in an untraced run. For `walk_stack(None)` the start frame counts only
+visible frames, with the number of hops measured from the running interpreter's own
+`walk_stack` (2 on Python 3.10, 4 on 3.12).
+
+On any internal error a replacement yields the original sequence, and a `TimeoutError`
+that lands inside it is re-raised, as it would be from the stdlib code in an untraced run.
+The self-test runs a toy exception through a wrapper and checks that the traceback text
+is the same with and without it, that `print_stack` inside a wrapped call matches too, and
+that `walk_stack(None)` starts at the same frame. When anything differs, the recorder
+restores the originals and skips the hooks that add frames.
+
+H11 does not cover code that walks `exc.__traceback__` or frames by hand, and the C-level
+printing of an uncaught exception at the top level (which is not model input). When an
+alarm or `KeyboardInterrupt` lands inside recorder code, the traceback differs from an
+untraced run in any case, because the interrupted location differs. As a last check, the
+writer scans each block's stdout and stderr for the recorder's path
+(`tracer_frame_visible`).
+
+### Upstream compatibility
+
+The recorder was tested with upstream CaP-X 53e9966 through the `.pth` hook. Two
+traced Cube Stack trials ran in two spawned workers, and the SHA-256 of each copied
+video matched the original file.
+
+| Target | Upstream CaP-X status | Recorded behavior | Skipped behavior |
+|---|---|---|---|
+| `requests.sessions` | Present | H1 HTTP requests and responses | None |
+| `capx.llm.client` | Present; model reply is a dictionary despite its `str` annotation | H3 logical and streamed calls | None |
+| `capx.utils.launch_utils` | Present | H5 feedback prompt; H6 output parsing | None |
+| `capx.utils.video_utils` | Present | H12 frame hashes | None |
+| `capx.envs.trial` | Present; `_save_trial_artifacts` creates the final named directory and `_save_turn_and_combined_videos` writes into it before `_run_single_trial` returns | H2 roles; H4 batch episodes and completed MP4 copies | None |
+| `capx.envs.runner` | Present | Rebinds H4 trial alias | None |
+| `capx.envs.tasks.base` | Present | H7 code, streams, observations; H8 API and H9 service setup; H10 frames | None |
+| `capx.web.async_trial_runner` | Present | H13 web trial lifecycle | None |
+| `capx.web.session_manager` | Present | H13 session feedback and end reasons | None |
+| `capx.integrations.vision.molmo` | Present | H14 parsed perception replies | None |
+| `capx.experiments.revision` | Absent | Applies H15 only when a CaP-X variant provides and imports this module | H15 runner identity on upstream |
+| `capx.experiments.manifest` | Absent | Applies H15 only when a CaP-X variant provides and imports this module | H15 manifest metadata on upstream |
+| `capx.experiments.records` | Absent | Applies H16 only when a CaP-X variant provides and imports this module | H16 runner record copy on upstream |
+
 
 ## 8. Frames, clocks and state
 
@@ -874,12 +1175,13 @@ starts at the first execution. The header explicitly labels the time-verified
 runner outcome as `試行全体の最終結果`; each execution has its own result.
 `試行を選ぶ` opens the experiment selector and trial cards.
 
-The left panel plays only the selected execution's recorded simulator-step
+For runner videos, the left panel plays only the selected execution's simulator-step
 interval, mapped to the combined video using recorded frames (interpolated
 between frames). A zero-length interval shows `動作なし` and a recorded starting
-image instead of another execution's video. Missing or ambiguous mappings are
-labelled and do not play an unverified interval. Native video timestamps refer
-to the whole movie. Mapping restrictions below also apply to these intervals.
+image. When a mapping is missing or ambiguous, the panel plays no unverified
+interval. For upstream copied videos, a matching turn video plays directly. If only a
+combined video is available and its interval cannot be mapped, the panel plays the
+whole trial and labels it as such. Native video timestamps refer to the whole movie.
 
 The right panel offers `入力プロンプト`, `モデル出力`, and `実行ログ`.
 The code block's source response ID determines its generating HTTP request;
@@ -920,6 +1222,16 @@ step anchors, and a last-frame index consistent with video duration within about
 one frame. Resets, other camera files and incomplete mappings disable following
 with an explanation while retaining video playback. No new recording is required.
 If no eligible MP4 is available, the recorded-frame view remains the default.
+
+For upstream episodes, the simple view matches `video_turn_NN` to the recorded
+`code_block_start.data.block_index`. It never guesses a missing index. Turn videos
+play at 0.5× speed. If a turn video is absent, it uses a combined video. When the frame
+records cannot identify the turn's clip, it labels the playback as the whole-trial video.
+When several cameras have combined videos, it chooses `video_combined.mp4` first, then the
+camera whose name comes first alphabetically. The detailed camera list shows combined
+videos only. For `source: envs.runner` episodes, once run details have loaded with zero
+runner records, the simple header uses the episode's `task_completed` value. Web UI and
+fork runner episodes keep an unknown verdict until a matching runner record is available.
 
 #### Diagnostic view: event and detail panes
 

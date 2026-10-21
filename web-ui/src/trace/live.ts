@@ -34,6 +34,7 @@ import type { EpisodeSummary } from './types';
 export const LIVE_POLL_MS = 1000;
 export const BROWSE_SUMMARY_MS = 5000;
 export const GRACE_POLL_MS = 1000;
+export const INTERRUPTED_COPY_POLL_MS = 20_000;
 export const GRACE_MAX_MS = 60_000;
 /** Late events can follow episode_end by seconds; the grace period never ends before this. */
 export const GRACE_MIN_MS = 15_000;
@@ -100,11 +101,33 @@ export interface PollPlan {
   summaryMs: number | null;
 }
 
-export function pollPlan(o: { live: boolean; running: boolean; grace: boolean }): PollPlan {
-  if (o.grace) return { events: true, summaryMs: GRACE_POLL_MS };
+export function pollPlan(o: { live: boolean; running: boolean; grace: boolean; videoPending?: boolean; videoCopyInterrupted?: boolean }): PollPlan {
+  if (o.videoCopyInterrupted) return { events: false, summaryMs: INTERRUPTED_COPY_POLL_MS };
+  if (o.videoPending || o.grace) return { events: true, summaryMs: GRACE_POLL_MS };
   if (o.running && o.live) return { events: true, summaryMs: LIVE_POLL_MS };
   if (o.running) return { events: false, summaryMs: BROWSE_SUMMARY_MS };
   return { events: false, summaryMs: null };
+}
+
+/** A pending marker left unchanged for two minutes can indicate an interrupted copy. */
+export function videoCopyInterrupted(s: EpisodeSummary | null, now = Date.now()): boolean {
+  if (s?.episode?.video_copy_pending !== true) return false;
+  const written = s.episode.updated_wall_time;
+  const ageMs = typeof s.heartbeat_age_s === 'number' ? s.heartbeat_age_s * 1000
+    : typeof written === 'number' ? now - written * 1000 : 0;
+  return ageMs >= 120_000;
+}
+
+/** Fetch the last video event when a pending copy becomes complete. */
+export function videoCopyFinished(previousPending: boolean, currentPending: boolean): boolean {
+  return previousPending && !currentPending;
+}
+
+export function videoCopyMessage(s: EpisodeSummary | null, now = Date.now()): string | null {
+  if (s?.episode?.video_copy_pending !== true) return null;
+  return videoCopyInterrupted(s, now)
+    ? '動画が保存されていません（コピー中断の可能性があります）'
+    : '動画を保存中';
 }
 
 /** The summary fields whose change means the episode's record changed (status, gaps, late events). */
@@ -119,6 +142,7 @@ export function summaryDigest(s: EpisodeSummary | null | undefined): string | nu
     s.dropped_events ?? null,
     s.n_warnings ?? null,
     s.gaps ?? null,
+    s.episode?.video_copy_pending ?? null,
   ]);
 }
 
