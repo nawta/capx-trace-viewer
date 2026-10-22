@@ -3,9 +3,10 @@
 Wrapper rules (section 2): each wrapper calls the original exactly once, in its
 own ``try``/``except BaseException: raise`` that passes the result or the very
 same exception object through; recorder code runs in ``guard()``, which
-swallows ``Exception`` but always re-raises ``TimeoutError`` (the trial alarm)
+swallows ``Exception`` but re-raises ``TimeoutError`` without an errno (the trial alarm)
 and every ``BaseException`` that is not an ``Exception``. Every other handler in
-recorder code that can run on a trial thread re-raises ``TimeoutError`` too
+recorder code that can run on a trial thread re-raises only that alarm; OS
+``ETIMEDOUT`` errors follow the normal recorder error path
 (``tests/recorder/test_timeout_rule.py``).
 
 A wrapper that opens a context (API call, code block, logical model call,
@@ -27,6 +28,7 @@ import time
 from typing import Any, Callable
 
 from capx_trace_recorder import context as C
+from capx_trace_recorder.timeout import is_trial_alarm
 
 WRAPPER_FLAG = "__capx_trace_wrapper__"
 _WRAPPERS: dict[int, tuple[Any, Any]] = {}  # id(original) -> (original, wrapper)
@@ -35,9 +37,9 @@ _WRAPPERS: dict[int, tuple[Any, Any]] = {}  # id(original) -> (original, wrapper
 def is_wrapper(obj: Any) -> bool:
     try:
         return bool(getattr(obj, WRAPPER_FLAG, False))
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return False
 
 
@@ -88,9 +90,9 @@ def report_internal_error(exc: BaseException, where: str) -> None:
             return
         ep.misc[key] = True
         ep.emit("trace_warning", status="warning", data=data)
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as err:  # noqa: BLE001
+        if is_trial_alarm(err):
+            raise
         pass
 
 
@@ -102,9 +104,9 @@ def internal_error_data(exc: BaseException, where: str) -> dict[str, Any]:
 
     try:
         text = str(exc)
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as err:  # noqa: BLE001
+        if is_trial_alarm(err):
+            raise
         text = ""
     data: dict[str, Any] = {"code": "internal_error"}
     put_redacted(data, "message", f"{where}: {type(exc).__name__}: {text}", 400)
@@ -112,12 +114,12 @@ def internal_error_data(exc: BaseException, where: str) -> dict[str, Any]:
 
 
 def guard(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Run recorder code: ``TimeoutError`` and non-``Exception`` propagate, the rest is recorded."""
+    """Run recorder code: trial alarms and non-``Exception`` errors propagate."""
     try:
         return fn(*args, **kwargs)
-    except TimeoutError:
-        raise
     except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         report_internal_error(exc, getattr(fn, "__qualname__", getattr(fn, "__name__", "?")))
         return None
 
@@ -132,9 +134,9 @@ def patch_attribute(owner: Any, name: str, make_wrapper: Callable[[Any], Any]) -
     """Replace ``owner.name`` by ``make_wrapper(original)``; ``None`` on success."""
     try:
         current = owner.__dict__.get(name) if isinstance(owner, type) else getattr(owner, name, None)
-    except TimeoutError:
-        raise
     except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return f"{name}: {type(exc).__name__}"
     if current is None:
         return f"{name}: not found"

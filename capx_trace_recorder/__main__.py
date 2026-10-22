@@ -26,6 +26,20 @@ def pth_path() -> Path:
     return Path(sysconfig.get_paths()["purelib"]) / "capx_trace_recorder.pth"
 
 
+def _read_hook(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _read_hook_for_change(path: Path, parser: argparse.ArgumentParser) -> str | None:
+    try:
+        return _read_hook(path)
+    except OSError as exc:
+        parser.error(f"cannot read hook at {path}: {exc}")
+
+
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "run":
         words = sys.argv[2:]
@@ -78,7 +92,7 @@ def main() -> None:
             if path.is_dir():
                 parser.error(f"hook path is a directory: {path}")
             if path.exists():
-                existing = path.read_text(encoding="utf-8")
+                existing = _read_hook_for_change(path, parser)
                 if existing not in (PTH_LINE, LEGACY_PTH_LINE):
                     parser.error(f"refusing to overwrite a modified hook: {path}")
                 if existing == PTH_LINE:
@@ -95,23 +109,30 @@ def main() -> None:
             parser.error(f"cannot install hook at {path}: {exc}. Use a writable Python environment")
         print(f"installed: {path} ({detail})")
     elif args.command == "uninstall-pth":
-        if path.is_symlink():
-            parser.error(f"refusing to remove a symlink: {path}")
-        if path.is_dir():
-            parser.error(f"hook path is a directory: {path}")
-        if path.exists():
-            if path.read_text(encoding="utf-8") not in (PTH_LINE, LEGACY_PTH_LINE):
-                parser.error(f"refusing to remove a modified hook: {path}")
-            path.unlink()
-            print(f"removed: {path} ({detail})")
-        else:
-            print(f"not present: {path} ({detail})")
+        try:
+            if path.is_symlink():
+                parser.error(f"refusing to remove a symlink: {path}")
+            if path.is_dir():
+                parser.error(f"hook path is a directory: {path}")
+            if path.exists():
+                if _read_hook_for_change(path, parser) not in (PTH_LINE, LEGACY_PTH_LINE):
+                    parser.error(f"refusing to remove a modified hook: {path}")
+                path.unlink()
+                print(f"removed: {path} ({detail})")
+            else:
+                print(f"not present: {path} ({detail})")
+        except OSError as exc:
+            parser.error(f"cannot uninstall hook at {path}: {exc}")
     elif args.command == "status":
-        if path.is_dir():
-            parser.error(f"hook path is a directory: {path}")
-        state = "absent" if not path.exists() else (
-            "installed" if path.read_text(encoding="utf-8") == PTH_LINE else
-            "legacy" if path.read_text(encoding="utf-8") == LEGACY_PTH_LINE else "modified")
+        try:
+            if path.is_dir():
+                parser.error(f"hook path is a directory: {path}")
+            present = path.exists()
+            existing = _read_hook(path) if present else None
+            state = ("absent" if not present else "installed" if existing == PTH_LINE
+                     else "legacy" if existing == LEGACY_PTH_LINE else "modified")
+        except OSError:
+            state = "unreadable"
         from capx_trace_recorder.bootstrap import recorder_status
         active, reason = recorder_status()
         print(f"{state}: {path} ({detail}); this process: active={active}; reason={reason or 'none'}")

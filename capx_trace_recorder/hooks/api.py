@@ -58,6 +58,7 @@ from capx_trace_recorder.serialize import (
     text_value,
     units_for,
 )
+from capx_trace_recorder.timeout import is_trial_alarm
 
 MAX_SLICE_BUFFER_CHARS = 8 * 1024 * 1024
 # id(api) -> (weak reference, names of public functions that could not be
@@ -122,9 +123,9 @@ def _offset(buf: Any) -> int | None:
         return None
     try:
         return int(buf.tell())
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return None
 
 
@@ -142,9 +143,9 @@ def _slice(buf: Any, start: int | None, pending: list[Any]) -> dict[str, Any] | 
         else:
             try:
                 out["text"] = text_value(buf.getvalue()[start:end], pending, "text")
-            except TimeoutError:
-                raise
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                if is_trial_alarm(exc):
+                    raise
                 out["text"] = None
     return out
 
@@ -427,9 +428,9 @@ def safe_str(exc: BaseException) -> str:
     """``str(exc)`` (taken on the calling thread: the exception may change later)."""
     try:
         return str(exc)
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as err:  # noqa: BLE001
+        if is_trial_alarm(err):
+            raise
         return ""
 
 
@@ -477,7 +478,7 @@ def _api_error(rec: Any, exc: BaseException) -> None:
     ep = rec.episode
     pending: list[Any] = []
     data, state, _nbytes = _finish_common(rec, pending)
-    alarm = isinstance(exc, TimeoutError)
+    alarm = is_trial_alarm(exc)
     if alarm:
         ep.alarm_seen = True
     message = safe_str(exc)
@@ -487,9 +488,9 @@ def _api_error(rec: Any, exc: BaseException) -> None:
     data["alarm_timeout"] = alarm
     try:
         frames = raw_frames(exc)
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as err:  # noqa: BLE001
+        if is_trial_alarm(err):
+            raise
         frames = None
     cause = exc.__cause__ if exc.__cause__ is not None else exc.__context__
     cause_type = type(cause).__qualname__ if cause is not None else None
@@ -604,9 +605,9 @@ def install_api(api: Any) -> tuple[bool, str | None, list[str]]:
         try:
             before = api.combined_doc()
             functions = api.functions()
-        except TimeoutError:  # the trial alarm (section 2)
-            raise
         except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             return False, f"combined_doc()/functions() raised {type(exc).__name__}", []
         installed: list[str] = []
         skipped: list[str] = []
@@ -626,17 +627,17 @@ def install_api(api: Any) -> tuple[bool, str | None, list[str]]:
                 continue
             try:
                 setattr(api, attr, types.MethodType(make_api_function(func, key), api))
-            except TimeoutError:
-                raise
             except Exception as exc:  # noqa: BLE001
+                if is_trial_alarm(exc):
+                    raise
                 skipped.append(f"{key}: cannot set the attribute ({type(exc).__name__})")
                 continue
             installed.append(attr)
         try:
             after = api.combined_doc()
-        except TimeoutError:
-            raise
         except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             after = f"<raised {type(exc).__name__}>"
         if after != before:
             for attr in installed:
@@ -668,9 +669,9 @@ def wrapped_attributes(api: Any) -> list[str]:
     """
     try:
         items = list(api.__dict__.items())
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return []
     return [attr for attr, value in items
             if isinstance(value, types.MethodType) and value.__self__ is api and is_wrapper(value.__func__)]

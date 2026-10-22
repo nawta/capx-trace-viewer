@@ -38,6 +38,7 @@ from capx_trace_recorder import context as C
 from capx_trace_recorder.config import ENV_FALLBACK_RUN_ID, TraceConfig
 from capx_trace_recorder.ids import fallback_run_id
 from capx_trace_recorder.store import init_store
+from capx_trace_recorder.timeout import is_trial_alarm
 
 _ACTIVATED = False
 _H11_OK = False
@@ -77,9 +78,9 @@ def _write_status() -> None:
         (root / f"recorder_status.{os.getpid()}.json").write_text(
             json.dumps({"active": _ACTIVE_RECORDER, "reason": _STAND_DOWN_REASON}, ensure_ascii=True) + "\n",
             encoding="utf-8")
-    except TimeoutError:
-        raise
-    except (KeyError, OSError, ValueError):
+    except (KeyError, OSError, ValueError) as exc:
+        if is_trial_alarm(exc):
+            raise
         pass
 
 
@@ -137,9 +138,9 @@ def _write_orphan_h4_warning(failure: dict[str, Any]) -> None:
         warning = path / f"recorder_warnings.{os.getpid()}.jsonl"
         with warning.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps({"code": "hook_install_failed", **failure}, ensure_ascii=True) + "\n")
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001 - a warning write cannot break the target import
+    except Exception as exc:  # noqa: BLE001 - a warning write cannot break the target import
+        if is_trial_alarm(exc):
+            raise
         pass
 
 
@@ -165,9 +166,9 @@ def _record_problem(hook: str, target: str, reason: str, module: Any) -> None:
         C.REGISTRY.hooks_skipped.append(skipped)
     try:
         episodes = C.REGISTRY.open_episodes()
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001 - never interrupt the triggering import
+    except Exception as exc:  # noqa: BLE001 - never interrupt the triggering import
+        if is_trial_alarm(exc):
+            raise
         return
     for ep in episodes:
         try:
@@ -177,9 +178,9 @@ def _record_problem(hook: str, target: str, reason: str, module: Any) -> None:
                 ctx.store.update_summary(ctx.wep, {"hooks_skipped_during_episode": done})
 
             ep.internal(builder)
-        except TimeoutError:
-            raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             continue
 
 
@@ -206,9 +207,9 @@ def log_failures_to_run() -> None:
             if failure.get("reason_redacted"):
                 data["message_redacted"] = True
             sink.emit("trace_warning", status="warning", data=data)
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001 - never break the import that triggered this
+    except Exception as exc:  # noqa: BLE001 - never break the import that triggered this
+        if is_trial_alarm(exc):
+            raise
         return
 
 
@@ -224,9 +225,9 @@ def _notify_open_episodes(installed: str | None, failure: dict[str, str] | None)
     """
     try:
         episodes = C.REGISTRY.open_episodes()
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return
     for ep in episodes:
         try:
@@ -245,9 +246,9 @@ def _notify_open_episodes(installed: str | None, failure: dict[str, str] | None)
                 ctx.store.update_summary(ctx.wep, {"hooks_installed_during_episode": done})
 
             ep.internal(builder)
-        except TimeoutError:
-            raise
-        except Exception:  # noqa: BLE001 - never break the import that triggered this
+        except Exception as exc:  # noqa: BLE001 - never break the import that triggered this
+            if is_trial_alarm(exc):
+                raise
             continue
 
 
@@ -456,9 +457,9 @@ def run_patch(name: str, module: Any) -> None:
     try:
         with _PATCH_LOCK:
             patch(module)
-    except TimeoutError:
-        raise
     except Exception as exc:  # noqa: BLE001 - never break the import
+        if is_trial_alarm(exc):
+            raise
         _record_failed("install", name, f"{type(exc).__name__}: {exc}")
 
 
@@ -533,9 +534,9 @@ class PostImportFinder(importlib.abc.MetaPathFinder):
             return spec
         try:
             _hook_loader(spec, fullname)
-        except TimeoutError:
-            raise
         except Exception as exc:  # noqa: BLE001 - the import itself must go on unchanged
+            if is_trial_alarm(exc):
+                raise
             _record_failed("install", fullname, f"post-import hook not set: {type(exc).__name__}")
         return spec
 
@@ -635,9 +636,9 @@ def activate() -> None:
             _record_choice("bundled", "public recorder stood down: capx has a bundled recorder")
             return
         _start_public(write_status=True)
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001 - tracing must never break ``import capx``
+    except Exception as exc:  # noqa: BLE001 - tracing must never break ``import capx``
+        if is_trial_alarm(exc):
+            raise
         pass
 
 

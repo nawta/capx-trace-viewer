@@ -36,6 +36,7 @@ from capx_trace_recorder.config import ENV_RUN_ID, ENV_RUNNER_RUN_DIR
 from capx_trace_recorder.hooks.common import guard, mark, patch_attribute
 from capx_trace_recorder.ids import sanitize_id
 from capx_trace_recorder.store import get_store
+from capx_trace_recorder.timeout import is_trial_alarm
 
 
 def _after_load_manifest(manifest: Any) -> None:
@@ -68,9 +69,9 @@ def _before_fingerprint(parts: Any) -> None:
         try:
             runner.run_dir = Path(str(run_dir)).resolve()
             os.environ[ENV_RUNNER_RUN_DIR] = str(runner.run_dir)
-        except TimeoutError:  # an OSError subclass: the trial alarm (section 2)
-            raise
-        except OSError:
+        except OSError as exc:
+            if is_trial_alarm(exc):
+                raise
             pass
     runner.exported = True
     from capx_trace_recorder import bootstrap
@@ -95,18 +96,18 @@ def _after_append(path: Any, record: Any) -> None:
         return
     try:
         target = Path(str(path))
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return
     if target.name != "trials.jsonl":
         return
     try:
         if target.resolve().parent != runner.run_dir:
             return
-    except TimeoutError:
-        raise
-    except OSError:
+    except OSError as exc:
+        if is_trial_alarm(exc):
+            raise
         return
     run_id = os.environ.get(ENV_RUN_ID) or runner.run_id
     if not run_id:

@@ -25,6 +25,7 @@ import sys
 from typing import Any
 
 from capx_trace_recorder.config import INLINE_TEXT_LIMIT, MASK_VALUE, SECRET_KEYS
+from capx_trace_recorder.timeout import is_trial_alarm
 
 MAX_DEPTH = 4
 MAX_ITEMS = 50
@@ -78,9 +79,9 @@ class PendingImage:
         size = getattr(self.image, "size", (0, 0))
         try:
             return int(size[0]) * int(size[1]) * 4
-        except TimeoutError:  # the trial alarm (section 2)
-            raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             return 0
 
 
@@ -192,9 +193,9 @@ def json_safe(value: Any, _depth: int = 0) -> Any:
     if np is not None and isinstance(value, np.generic):
         try:
             return json_safe(value.item(), _depth + 1)
-        except TimeoutError:
-            raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             return type_name(value)
     if isinstance(value, dict):
         return {str(k): json_safe(v, _depth + 1) for k, v in dict.items(value)}
@@ -232,9 +233,9 @@ class _Walker:
         if np is not None and isinstance(value, np.generic):
             try:
                 item = value.item()
-            except TimeoutError:
-                raise
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                if is_trial_alarm(exc):
+                    raise
                 return {"type": type_name(value)}
             if isinstance(item, float):
                 return float_value(item)
@@ -252,9 +253,9 @@ class _Walker:
         if isinstance(value, (bytes, bytearray, memoryview)):
             try:
                 length = len(value)
-            except TimeoutError:
-                raise
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                if is_trial_alarm(exc):
+                    raise
                 length = None
             return {"type": type_name(value), "length": length}
         pil = _pil_image_class()
@@ -324,9 +325,9 @@ class _Walker:
         items: dict[str, Any] = {}
         try:
             fields = dataclasses.fields(value)
-        except TimeoutError:
-            raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             return {"type": type_name(value)}
         for f in fields:
             if len(items) >= MAX_ITEMS or self.nodes >= MAX_NODES:
@@ -336,9 +337,9 @@ class _Walker:
                 continue
             try:
                 item = object.__getattribute__(value, f.name)
-            except TimeoutError:
-                raise
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                if is_trial_alarm(exc):
+                    raise
                 items[f.name] = {"type": "<unavailable>"}
                 continue
             items[f.name] = self.walk(item, depth + 1)
@@ -360,9 +361,9 @@ class _Walker:
         if size <= INLINE_ARRAY_SIZE:
             try:
                 node["values"] = _inline_values(arr.tolist())
-            except TimeoutError:
-                raise
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                if is_trial_alarm(exc):
+                    raise
                 node["values_omitted"] = "tolist_failed"
             return node
         nbytes = int(arr.nbytes)
@@ -399,9 +400,9 @@ class _Walker:
                 data = np.ascontiguousarray(arr.flat[:n_items]).tobytes()
                 node["sha256_prefix"] = hashlib.sha256(data).hexdigest()
                 node["sha256_prefix_bytes"] = len(data)
-        except TimeoutError:
-            raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             node["sha256_skipped"] = "hash_failed"
 
     def pil_image(self, img: Any) -> dict[str, Any]:
@@ -410,9 +411,9 @@ class _Walker:
             size = img.size
             node["size"] = [int(size[0]), int(size[1])]
             node["mode"] = str(img.mode)
-        except TimeoutError:
-            raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             return node
         core = getattr(img, "_im", None)
         loaded = core is not None and type(core).__name__ != "DeferredError"
@@ -424,9 +425,9 @@ class _Walker:
             try:
                 node["image"] = {"label": self.label}
                 self.pending.append(PendingImage(img.copy(), node["image"], self.label))
-            except TimeoutError:
-                raise
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                if is_trial_alarm(exc):
+                    raise
                 node.pop("image", None)
                 node["image_not_saved"] = "copy_failed"
         else:
@@ -439,9 +440,9 @@ class _Walker:
             node["shape"] = [int(s) for s in tensor.shape]
             node["dtype"] = str(tensor.dtype)
             node["device"] = str(tensor.device)
-        except TimeoutError:
-            raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             pass
         return node
 
@@ -455,9 +456,9 @@ def _looks_like_image(arr: Any) -> bool:
             and arr.shape[0] >= 8
             and arr.shape[1] >= 8
         )
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return False
 
 

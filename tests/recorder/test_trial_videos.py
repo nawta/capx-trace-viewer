@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import dataclasses
+import errno
 import json
 import os
 from pathlib import Path
@@ -93,6 +94,51 @@ def test_copy_refreshes_heartbeat(tmp_path, monkeypatch):
     episode, _, videos, _ = record(tmp_path, trial)
     assert videos["artifacts"][0]["written"] is True
     assert episode / "heartbeat" in touched
+
+
+def test_copy_refreshes_other_open_episode_heartbeat(tmp_path, monkeypatch):
+    trial = tmp_path / "trial"
+    trial.mkdir()
+    (trial / "video_combined.mp4").write_bytes(b"video")
+    trace_store = S.TraceStore(TraceConfig(trace_dir=tmp_path / "traces"))
+    a = C.open_episode(trace_store, run_id="run", episode_id="a", source="envs.runner")
+    b = C.open_episode(trace_store, run_id="run", episode_id="b", source="envs.runner")
+    for ep in (a, b):
+        ep.emit("episode_start", status="started", data={"source": "envs.runner", "tracer": {}})
+    assert trace_store.flush(5)
+    touched = []
+    original = os.utime
+
+    def track(path, *args, **kwargs):
+        if path == b.base_dir / "heartbeat" and any((a.base_dir / "videos").glob(".video_*.tmp.*")):
+            touched.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(TRIAL.os, "utime", track)
+    end_episode(a, end_reason="completed", video_dir=trial)
+    C.close_episode(a)
+    assert trace_store.flush(5)
+    events, _, _ = read_events(a.events_path)
+    assert by_type(events, "trial_videos")[0]["artifacts"][0]["written"] is True
+    assert touched == [b.base_dir / "heartbeat"]
+    C.close_episode(b)
+    trace_store.shutdown(5)
+
+
+def test_copy_ignores_heartbeat_io_timeout(tmp_path, monkeypatch):
+    trial = tmp_path / "trial"
+    trial.mkdir()
+    (trial / "video_combined.mp4").write_bytes(b"video")
+    original = os.utime
+
+    def timeout(path, *args, **kwargs):
+        if str(path).endswith("heartbeat") and any(Path(path).parent.glob("videos/.video_*.tmp.*")):
+            raise OSError(errno.ETIMEDOUT, "timed out")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(TRIAL.os, "utime", timeout)
+    _, _, videos, _ = record(tmp_path, trial)
+    assert videos["artifacts"][0]["written"] is True
 
 
 def test_video_copy_unsupported_platform_warns_once(tmp_path, monkeypatch):

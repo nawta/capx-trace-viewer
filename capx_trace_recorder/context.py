@@ -59,6 +59,7 @@ from typing import Any
 
 from capx_trace_recorder.ids import random_hex, sanitize_id, with_suffix
 from capx_trace_recorder.store import EpisodeRecorder, TraceStore, UnscopedLog, get_store
+from capx_trace_recorder.timeout import is_trial_alarm
 
 _THREAD = threading.local()
 WEB_EPISODE: contextvars.ContextVar[EpisodeRecorder | None] = contextvars.ContextVar(
@@ -396,9 +397,9 @@ def _instance_attr(obj: Any, name: str) -> Any:
     """``obj.__dict__[name]`` without descriptors or ``__getattr__``, else None."""
     try:
         return obj.__dict__.get(name)
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001 - no instance dict
+    except Exception as exc:  # noqa: BLE001 - no instance dict
+        if is_trial_alarm(exc):
+            raise
         return None
 
 
@@ -426,9 +427,9 @@ def thread_is_one_job() -> bool:
     thread = threading.current_thread()
     try:
         target = thread.__dict__.get("_target")
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return False
     if target is None:
         return False

@@ -30,6 +30,8 @@ import os
 import sys
 from typing import Any
 
+from capx_trace_recorder.timeout import is_trial_alarm
+
 _TRACING_DIR = os.path.dirname(os.path.abspath(__file__))
 _TRACING_DIR_REAL = os.path.realpath(_TRACING_DIR)
 _ORIGINALS: dict[str, Any] = {}
@@ -46,9 +48,9 @@ def is_recorder_frame(frame: Any) -> bool:
         if isinstance(filename, str) and filename.startswith((_TRACING_DIR + os.sep,
                                                               _TRACING_DIR_REAL + os.sep)):
             return True
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return False
     return False
 
@@ -57,16 +59,16 @@ def _filtered_walk_tb(tb: Any):
     original = _ORIGINALS["walk_tb"]
     try:
         items = list(original(tb))
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         yield from original(tb)
         return
     try:
         kept = [item for item in items if not is_recorder_frame(item[0])]
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         kept = items
     yield from kept
 
@@ -75,16 +77,16 @@ def _filtered_walk_tb_with_full_positions(tb: Any):
     original = _ORIGINALS["_walk_tb_with_full_positions"]
     try:
         items = list(original(tb))
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         yield from original(tb)
         return
     try:
         kept = [item for item in items if not is_recorder_frame(item[0])]
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         kept = items
     yield from kept
 
@@ -113,9 +115,9 @@ def _filtered_walk_stack(f: Any):
     if f is None:
         try:
             f = _start_frame(sys._getframe(1))
-        except TimeoutError:
-            raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             yield from original(None)
             return
         if f is None:
@@ -123,9 +125,9 @@ def _filtered_walk_stack(f: Any):
     for item in original(f):
         try:
             hidden = is_recorder_frame(item[0])
-        except TimeoutError:
-            raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             hidden = False
         if not hidden:
             yield item
@@ -295,9 +297,9 @@ def self_test(wrap: Any) -> tuple[bool, str]:
         if c1(_filtered_walk_stack, direct) != reference or c1(_filtered_walk_stack, wrap(direct)) != reference:
             return False, "walk_stack(None) start frame differs"
         return True, "ok"
-    except TimeoutError:
-        raise
     except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return False, f"self-test raised {type(exc).__name__}"
 
 
@@ -306,9 +308,9 @@ def install(wrap: Any) -> tuple[bool, str]:
     global _INSTALLED
     try:
         import traceback as tb_mod  # stdlib; imported by logging/requests anyway
-    except TimeoutError:
-        raise
     except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return False, f"cannot import traceback: {type(exc).__name__}"
     global _HOPS
     original_walk_stack = getattr(tb_mod, "walk_stack", None)

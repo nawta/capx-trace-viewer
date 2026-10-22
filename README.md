@@ -115,7 +115,7 @@ In a pip-managed environment, run `python -m pip install /path/to/capx-trace-vie
 (cd web-ui && npm run test:trace)
 ```
 
-In the viewer environment, tests that need CaP-X are reported as skipped. To run them against an upstream checkout, set `PYTHONPATH=/path/to/cap-x-upstream` and `CAPX_UPSTREAM_DIR=/path/to/cap-x-upstream`, then run `-m pytest tests/recorder -q` with the CaP-X environment's Python. If that interpreter differs from the one running the tests, set `CAPX_PYTHON` to it for the subprocess import test. Set `CAPX_PYTHON312` to a Python 3.12 interpreter for the optional cross-version checks. Tests that use `/proc`, FIFOs, or SIGALRM run only on Linux and are skipped elsewhere. In an editable install, reinstall this distribution after changing its package layout.
+In the viewer environment, tests that need CaP-X are reported as skipped. To run them against an upstream checkout, set `PYTHONPATH=/path/to/cap-x-upstream` and `CAPX_UPSTREAM_DIR=/path/to/cap-x-upstream`, then run `-m pytest tests/recorder -q` with the CaP-X environment's Python. If that interpreter differs from the one running the tests, set `CAPX_PYTHON` to it for the subprocess import test. Set `CAPX_PYTHON312` to a Python 3.12 interpreter for the optional cross-version checks. A few tests need Linux features such as `/proc`, FIFOs, or SIGALRM and skip on other platforms. In an editable install, reinstall this distribution after changing its package layout.
 
 ## Recording the demo videos
 

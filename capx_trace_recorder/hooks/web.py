@@ -39,6 +39,7 @@ from capx_trace_recorder import context as C
 from capx_trace_recorder.hooks.common import guard, is_wrapper, mark, mark_only, rebind_aliases
 from capx_trace_recorder.ids import sanitize_id, utc_stamp
 from capx_trace_recorder.store import get_store
+from capx_trace_recorder.timeout import is_trial_alarm
 
 
 def _state_name(session: Any) -> str | None:
@@ -121,10 +122,12 @@ def _web_start(args: tuple, kwargs: dict, slot: Any) -> Any:
         state = _WebState(ep, session)
         slot.started = True
     except TimeoutError as exc:
-        # as in H4: a failing cleanup is recorded by its own guard and never replaces
-        # the alarm; the bare raise re-raises the original
-        guard(_abandon_start, ep, slot, exc, "_web_start")
-        raise
+        if is_trial_alarm(exc):
+            # a failing cleanup cannot replace the alarm
+            guard(_abandon_start, ep, slot, exc, "_web_start")
+            raise
+        _abandon_start(ep, slot, exc, "_web_start")
+        return None
     except Exception as exc:  # noqa: BLE001 - the alarm is re-raised by the handler above
         _abandon_start(ep, slot, exc, "_web_start")
         return None

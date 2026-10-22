@@ -45,6 +45,7 @@ from typing import Any, NamedTuple
 from urllib.parse import urlsplit, urlunsplit
 
 from capx_trace_recorder.config import MASK_VALUE, SECRET_KEYS, _parse_proxy_ports
+from capx_trace_recorder.timeout import is_trial_alarm
 
 _DATA_URL = re.compile(r"^data:([^;,]*)((?:;[^;,]*)*?);base64,", re.IGNORECASE)
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -111,9 +112,9 @@ def sanitize_url(url: Any) -> dict[str, Any]:
             "path": parts.path,
             "known_proxy": host in LOOPBACK_HOSTS and port in known_proxy_ports(),
         }
-    except TimeoutError:  # the trial alarm (section 2): called on the trial thread
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return {"url": None, "host": None, "port": None, "path": None, "known_proxy": False}
 
 
@@ -906,7 +907,8 @@ _KEY_FORMAT = re.compile(
     r"|xox[abpr]-[A-Za-z0-9\-]{10,}"  # Slack
     r"|(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])"  # AWS access key id
     r"|gsk_[A-Za-z0-9_\-]{20,}|xai-[A-Za-z0-9_\-]{20,}|r8_[A-Za-z0-9_\-]{20,}"
-    r"|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\Z)"
+    r"|-----BEGIN (?P<key_label>[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----[\s\S]*?"
+    r"(?:-----END (?P=key_label)-----|\Z)"
     r")"
 )
 
@@ -1080,7 +1082,7 @@ def _drop_last_token(text: str) -> str:
 def redact(text: Any, limit: int | None = 2000) -> Redacted:
     """``text`` with secrets removed (the rules above), then cut to ``limit`` characters.
 
-    Raises only the trial alarm (``TimeoutError``) and non-``Exception``
+    Raises only the trial alarm (``TimeoutError`` without an errno) and non-``Exception``
     exceptions: it also runs on the calling thread (``hooks/common``,
     ``bootstrap``). If a rule fails, a fixed note is stored instead of the text,
     so nothing unredacted is stored.
@@ -1101,9 +1103,9 @@ def redact(text: Any, limit: int | None = 2000) -> Redacted:
         if longer:
             stored += f"\n[recorder: only the first {REDACT_WINDOW} of {len(text)} characters were read]"
         return Redacted(stored, flag, longer)
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return Redacted(REDACTION_FAILED, True, False)
 
 

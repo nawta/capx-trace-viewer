@@ -92,6 +92,47 @@ def test_install_uninstall_and_status(monkeypatch, tmp_path, capsys):
     assert not path.exists()
 
 
+@pytest.mark.parametrize("command", ["install-pth", "uninstall-pth", "status"])
+def test_invalid_utf8_hook_is_modified(monkeypatch, tmp_path, capsys, command):
+    monkeypatch.setattr(cli.sysconfig, "get_paths", lambda: {"purelib": str(tmp_path)})
+    path = tmp_path / "capx_trace_recorder.pth"
+    path.write_bytes(b"\xff\xfe")
+    monkeypatch.setattr(sys, "argv", ["capx-trace-recorder", command])
+    if command == "status":
+        cli.main()
+        assert "modified:" in capsys.readouterr().out
+    else:
+        with pytest.raises(SystemExit) as exit_info:
+            cli.main()
+        assert exit_info.value.code == 2
+        assert "modified hook" in capsys.readouterr().err
+    assert path.read_bytes() == b"\xff\xfe"
+
+
+@pytest.mark.parametrize("command", ["install-pth", "uninstall-pth", "status"])
+def test_unreadable_hook_has_clear_state(monkeypatch, tmp_path, capsys, command):
+    monkeypatch.setattr(cli.sysconfig, "get_paths", lambda: {"purelib": str(tmp_path)})
+    path = tmp_path / "capx_trace_recorder.pth"
+    path.write_text(cli.PTH_LINE)
+    original = Path.read_text
+    def unreadable(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("unreadable hook")
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    monkeypatch.setattr(sys, "argv", ["capx-trace-recorder", command])
+    if command == "status":
+        cli.main()
+        assert "unreadable:" in capsys.readouterr().out
+    else:
+        with pytest.raises(SystemExit) as exit_info:
+            cli.main()
+        assert exit_info.value.code == 2
+        message = capsys.readouterr().err
+        assert "cannot read hook at" in message and "unreadable hook" in message
+        assert "Use a writable Python environment" not in message
+
+
 def test_legacy_pth_is_recognized_replaced_and_removed(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli.sysconfig, "get_paths", lambda: {"purelib": str(tmp_path)})
     path = tmp_path / "capx_trace_recorder.pth"

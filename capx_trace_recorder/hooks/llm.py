@@ -34,6 +34,7 @@ from capx_trace_recorder.hooks.http import new_logical_call_id
 from capx_trace_recorder.ids import new_event_id
 from capx_trace_recorder.segments import find_task_text
 from capx_trace_recorder.serialize import text_value
+from capx_trace_recorder.timeout import is_trial_alarm
 
 
 # ---------------------------------------------------------------------------
@@ -113,13 +114,13 @@ def end_logical_ok(lc: Any, result: Any) -> None:
 
 def end_logical_error(lc: Any, exc: BaseException) -> None:
     ep = lc.episode
-    if isinstance(exc, TimeoutError) and hasattr(ep, "alarm_seen"):
+    if is_trial_alarm(exc) and hasattr(ep, "alarm_seen"):
         ep.alarm_seen = True
     try:
         message = str(exc)
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as err:  # noqa: BLE001
+        if is_trial_alarm(err):
+            raise
         message = type(exc).__name__
     from capx_trace_recorder.hooks.http import fill_message
 
@@ -253,9 +254,9 @@ class StreamState:
         pending: list[Any] = []
         try:
             message = str(exc)
-        except TimeoutError:
-            raise
-        except Exception:  # noqa: BLE001
+        except Exception as err:  # noqa: BLE001
+            if is_trial_alarm(err):
+                raise
             message = type(exc).__name__
         from capx_trace_recorder.hooks.http import fill_message
 
@@ -271,7 +272,7 @@ class StreamState:
         def builder(ctx, pending=pending, message=message):
             fill_message(ctx, message=message)
             ctx.fill_pending(pending)
-        if isinstance(exc, TimeoutError) and hasattr(ep, "alarm_seen"):
+        if is_trial_alarm(exc) and hasattr(ep, "alarm_seen"):
             ep.alarm_seen = True
         ep.emit("model_error", status="error", data=data, parent=lc.last_request_id,
                 refs={"logical_call_id": lc.event_id}, builder=builder)

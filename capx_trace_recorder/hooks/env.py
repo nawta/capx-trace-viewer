@@ -42,6 +42,7 @@ from capx_trace_recorder import context as C
 from capx_trace_recorder.hooks.common import add_overhead, guard, mark, patch_attribute
 from capx_trace_recorder.ids import new_event_id
 from capx_trace_recorder.serialize import ArrayBudget, json_safe, pending_builders, summarize, text_value
+from capx_trace_recorder.timeout import is_trial_alarm
 
 DIRECT_NAMES = ("env", "obs", "APIS", "INPUTS")
 TRACER_PATH_MARKERS = ("capx_trace_recorder/", "capx_trace_recorder\\")
@@ -165,9 +166,9 @@ def _block_start(env: Any, action: Any) -> Any:
     block.block_index = ep.count("n_code_blocks") - 1
     try:
         block.exec_globals = env.__dict__.get("_exec_globals")
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         block.exec_globals = None
     block.sim_step0 = ep.clock()[0]
     from capx_trace_recorder.hooks.api import _chain, keyframe_and_state, state_parts
@@ -232,9 +233,9 @@ def _as_bool(value: Any) -> bool | None:
         return None
     try:
         return bool(value)
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return None
 
 
@@ -298,7 +299,7 @@ def _block_end(block: Any, result: Any, exc: BaseException | None) -> None:
 
         exc_message = safe_str(exc)  # redacted, then cut to 2000 characters, by the writer
         data["exception"] = {"type": type(exc).__name__, "message": None}
-        if isinstance(exc, TimeoutError):
+        if is_trial_alarm(exc):
             ep.alarm_seen = True
     pending = list(exec_result.get("pending") or [])
 
@@ -446,9 +447,9 @@ def make_render_wrapper(original: Any, camera_kind: str) -> Any:
         t1 = time.perf_counter()
         try:
             purpose = sys._getframe(1).f_code.co_name
-        except TimeoutError:
-            raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             purpose = None
         guard(_snapshot, self, result, camera_kind, purpose)
         ep = C.REGISTRY.episode_for_env(self)

@@ -24,13 +24,15 @@ import threading
 import weakref
 from typing import Any
 
+from capx_trace_recorder.timeout import is_trial_alarm
+
 
 def _attr(obj: Any, name: str) -> Any:
     try:
         return getattr(obj, name, None)
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001 - a property that raises
+    except Exception as exc:  # noqa: BLE001 - a property that raises
+        if is_trial_alarm(exc):
+            raise
         return None
 
 
@@ -39,9 +41,9 @@ def _as_int(value: Any) -> int | None:
         return None
     try:
         return int(value)
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return None
 
 
@@ -50,9 +52,9 @@ def _as_float(value: Any) -> float | None:
         return None
     try:
         out = float(value)
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return None
     return out if out == out and out not in (float("inf"), float("-inf")) else None
 
@@ -99,9 +101,9 @@ def sim_clock(low_env: Any) -> tuple[int | None, float | None]:
         if callable(getter) and type(low_env).__module__.startswith("capx.envs.simulators.libero"):
             try:
                 sim_time = _as_float(getter())
-            except TimeoutError:
-                raise
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                if is_trial_alarm(exc):
+                    raise
                 sim_time = None
     return step, sim_time
 
@@ -157,9 +159,9 @@ def _read_body_names(model: Any, nbody: int) -> tuple[str, ...]:
         if callable(id2name):
             try:
                 name = id2name(i)
-            except TimeoutError:
-                raise
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                if is_trial_alarm(exc):
+                    raise
                 name = None
         out.append(str(name) if name else "")
     return tuple(out)
@@ -206,9 +208,9 @@ def capture_state(low_env: Any) -> tuple[StateSnapshot | None, str | None]:
         if xpos.ndim != 2 or xquat.ndim != 2 or xpos.shape[0] != len(names):
             return None, "unexpected_state_shape"
         return StateSnapshot(_as_float(_attr(data, "time")), qpos, names, xpos, xquat), None
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return None, "state_read_failed"
 
 

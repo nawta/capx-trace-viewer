@@ -28,6 +28,8 @@ import sys
 import threading
 from typing import Any, NamedTuple
 
+from capx_trace_recorder.timeout import is_trial_alarm
+
 MIN_SEGMENT_CHARS = 8
 MAX_OCCURRENCES = 20
 MAX_UNATTRIBUTED = 200
@@ -93,9 +95,9 @@ def literals_of(func: Any, origin: str) -> tuple[Segment, ...]:
     """Prose-like string constants (>= 8 chars, containing whitespace) of ``func``."""
     try:
         original = inspect.unwrap(func)
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         original = func
     code = getattr(original, "__code__", None)
     if code is None:
@@ -229,9 +231,9 @@ class SegmentRegistry:
             full = _safe_attr(env, "_full_prompt")
             try:
                 text = _first_text(full[-1]["content"]) if isinstance(full, list) and full else None
-            except TimeoutError:
-                raise
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                if is_trial_alarm(exc):
+                    raise
                 text = None
             before, after = split_prompt_text(text)
             if before is not None:
@@ -253,9 +255,9 @@ def _searchable(text: Any) -> bool:
 def _safe_attr(obj: Any, name: str) -> Any:
     try:
         return obj.__dict__.get(name) if hasattr(obj, "__dict__") else None
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return None
 
 

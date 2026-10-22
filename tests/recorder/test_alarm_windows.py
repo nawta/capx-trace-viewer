@@ -13,6 +13,7 @@ thread (section 7.3), and H4's cleanup of contexts left by earlier episodes.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import signal
 import sys
@@ -601,6 +602,58 @@ def test_h4_episode_not_left_open_by_an_alarm_after_the_start(rec, monkeypatch, 
     interrupted = [d for d in dirs if docs[d.name]["end_reason"] == "timeout_alarm"][0]
     events = [json.loads(line) for line in (interrupted / "events.jsonl").read_text().splitlines()]
     assert [e["event_type"] for e in events][-1] == "episode_end"
+
+
+def test_h4_file_io_timeout_at_unique_episode_id_runs_trial(rec, monkeypatch, h4_env):
+    env, config = h4_env
+    monkeypatch.setattr(C.REGISTRY.runner, "run_id", "run")
+    real_exists = TRIAL.Path.exists
+    hit = []
+    trial_thread = threading.get_ident()
+
+    def timed_out(path):
+        if threading.get_ident() == trial_thread and path.parent == rec.root / "run":
+            hit.append(path)
+            raise OSError(errno.ETIMEDOUT, "timed out")
+        return real_exists(path)
+
+    monkeypatch.setattr(TRIAL.Path, "exists", timed_out)
+    calls = []
+    assert _h4(lambda e: calls.append(e) or "summary")(env, 1, Args(), config) == "summary"
+    assert hit and calls == [env]
+    monkeypatch.setattr(TRIAL.Path, "exists", real_exists)
+    notes = [e["data"] for e in rec.unscoped() if e["data"].get("code") == "internal_error"]
+    assert len(notes) == 1 and notes[0]["outside_episode"] is True
+
+
+@pytest.mark.parametrize("where", ["attach_frames", "push_episode"])
+def test_h4_file_io_timeout_inside_start_releases_registration(rec, monkeypatch, h4_env, where):
+    env, config = h4_env
+    opened = []
+    slots = []
+    real_open = C.open_episode
+
+    def track_open(*args, **kwargs):
+        ep = real_open(*args, **kwargs)
+        opened.append(ep)
+        slots.append(kwargs["slot"])
+        return ep
+
+    monkeypatch.setattr(C, "open_episode", track_open)
+    _raise_once(TRIAL if where == "attach_frames" else C, where,
+                OSError(errno.ETIMEDOUT, "timed out"), monkeypatch)
+    calls = []
+    assert _h4(lambda e: calls.append(e) or "summary")(env, 1, Args(), config) == "summary"
+    assert calls == [env]
+    assert len(opened) == len(slots) == 1 and slots[0].abandoned
+    ep = opened[0]
+    rec.flush()  # a queued start releases its references when the writer handles its end
+    assert ep.released and ep.env is None and ep.low_env is None
+    assert ep.frame_tap is None
+    assert C.REGISTRY.open_episodes() == [] and thread_stacks()["episodes"] == []
+    assert C.REGISTRY.binding(env) is None and C.REGISTRY.binding(env.low_level_env) is None
+    notes = [e["data"] for e in rec.unscoped() if e["data"].get("code") == "internal_error"]
+    assert len(notes) == 1 and notes[0]["outside_episode"] is True
 
 
 @pytest.mark.parametrize("where", ["attach_frames", "push_episode"])

@@ -28,6 +28,7 @@ import weakref
 from typing import Any
 
 from capx_trace_recorder.ids import sanitize_id
+from capx_trace_recorder.timeout import is_trial_alarm
 
 # id(low_env) -> weak reference to its tap: the tap and the env reference each
 # other through the instance attribute, so both go away together when the env is
@@ -101,9 +102,9 @@ class FrameTap:
     def _buffer(self, state: BufferState) -> Any:
         try:
             return self.low.__dict__.get(state.attr)
-        except TimeoutError:  # the trial alarm (section 2)
-            raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             return None
 
     def _observe(self, state: BufferState, sim_step: int | None) -> Any:
@@ -236,9 +237,9 @@ def _copy_frame(frame: Any) -> Any:
         return None
     try:
         arr = np.array(frame, copy=True, order="C")
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return None
     if arr.dtype != np.uint8 or arr.ndim != 3 or arr.shape[2] not in (3, 4):
         return None
@@ -265,9 +266,9 @@ def install_tap(low_env: Any) -> tuple[FrameTap | None, str | None]:
         return existing, None
     try:
         current = low_env.__dict__.get("_record_frame")
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return None, "no_instance_dict"
     if current is not None and getattr(current, "__capx_trace_wrapper__", False):
         return getattr(current, "__capx_trace_tap__", None), None
@@ -283,16 +284,16 @@ def install_tap(low_env: Any) -> tuple[FrameTap | None, str | None]:
     def traced_record_frame(*args: Any, **kwargs: Any) -> Any:
         try:
             tap.before_record()
-        except TimeoutError:
-            raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             pass
         result = original(*args, **kwargs)
         try:
             tap.after_record()
-        except TimeoutError:
-            raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             pass
         return result
 
@@ -300,9 +301,9 @@ def install_tap(low_env: Any) -> tuple[FrameTap | None, str | None]:
     traced_record_frame.__capx_trace_tap__ = tap  # type: ignore[attr-defined]
     try:
         low_env._record_frame = traced_record_frame
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return None, "cannot_set_attribute"
     with _TAPS_LOCK:
         for key in [k for k, r in _TAPS.items() if r() is None]:

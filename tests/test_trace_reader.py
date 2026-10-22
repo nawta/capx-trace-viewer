@@ -744,7 +744,6 @@ def test_dir_opens_one_segment_at_a_time_without_following_symlinks(tmp_path: Pa
     (root / "real" / "sub").mkdir()
     (root / "inside_link").symlink_to(root / "real")  # stays inside the root: refused too
     (root / "real" / "file_link").symlink_to(root / "real" / "f.txt")
-    os.mkfifo(root / "real" / "fifo")
     with reader.Dir.open_root(root) as d:
         with pytest.raises(OSError):
             d.subdir("inside_link")
@@ -761,12 +760,20 @@ def test_dir_opens_one_segment_at_a_time_without_following_symlinks(tmp_path: Pa
             assert reader.is_symlink_refusal(refused.value) and real.file_stat("file_link") is None
             with pytest.raises(reader.NotRegularFileError):
                 real.open_file("sub")
-            with pytest.raises(reader.NotRegularFileError):
-                real.open_file("fifo")  # O_NONBLOCK: opening a FIFO does not wait for a writer
     with pytest.raises(OSError):
         reader.Dir.open_below(root, ["inside_link", "f.txt"])
     fd, _st = reader.Dir.open_below(root, ["real"]).open_file("f.txt")
     os.close(fd)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="FIFO path test requires Linux")
+def test_dir_rejects_fifo_without_blocking(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    os.mkfifo(root / "fifo")
+    with reader.Dir.open_root(root) as d:
+        with pytest.raises(reader.NotRegularFileError):
+            d.open_file("fifo")  # O_NONBLOCK: opening a FIFO does not wait for a writer
 
 
 def test_demo_has_an_oversize_event_with_its_data_in_an_asset(demo_root: Path) -> None:

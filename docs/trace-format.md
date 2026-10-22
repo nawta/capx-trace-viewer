@@ -31,6 +31,8 @@ Recorded traces identify recorder hooks by these ids. The short names below are 
 
 The trace recorder observes a trial without changing its model inputs, results, simulator state, exceptions, or timing. API wrappers call the original method once and return the original object or raise the original exception. Hooks do not add simulator calls. The trial thread queues small summaries; a writer thread processes payloads and files.
 
+The runner's trial alarm is a `TimeoutError` without an OS error number. Recorder handlers re-raise that alarm. A file-system `ETIMEDOUT` has an error number and follows the normal recorder error path, so a failed trace read does not end the trial.
+
 The recorder avoids printing, logging, Python warnings, and changes to randomness. Only a startup-hook failure prints one short line to stderr. It hides recorder frames from tracebacks that the model may receive. It keeps HTTP headers, raw launch arguments, and environment dumps out of traces. It records configured model names and endpoint host/port from launch arguments. It redacts known secret fields and URL credentials before storage. Prompts, model replies, stdout, stderr, and images can still contain secrets, so protect the trace root.
 
 When tracing is disabled, the recorder installs no hooks. Failed writes, dropped events, late events, and failed hook installs count as gaps. A trace is complete only when its episode ends without gaps.
@@ -73,7 +75,7 @@ export CAPX_TRACE_DIR=./traces
 uv run --no-sync --active capx/envs/launch.py --config-path /path/to/config.yaml
 ```
 
-For a pip-managed environment, run `python -m pip install /path/to/capx-trace-viewer` and `python -m capx_trace_recorder install-pth` with that environment's interpreter. `status` reports the interpreter, the hook path, and its state. Run `uninstall-pth` before removing the package. After `uv sync`, or after changing the package layout of an editable install, reinstall this distribution and its hook. A leftover `.pth` file does nothing while tracing is off.
+For a pip-managed environment, run `python -m pip install /path/to/capx-trace-viewer` and `python -m capx_trace_recorder install-pth` with that environment's interpreter. `status` reports the interpreter, the hook path, and its state. It reports invalid UTF-8 hook content as `modified` and a read failure as `unreadable`. Install and uninstall refuse a modified hook and stop if they cannot read it. Run `uninstall-pth` before removing the package. After `uv sync`, or after changing the package layout of an editable install, reinstall this distribution and its hook. A leftover `.pth` file does nothing while tracing is off.
 
 To trace a single process, use `python -m capx_trace_recorder run -m module [args...]` or `python -m capx_trace_recorder run script.py [args...]`. This launcher adds runpy frames to printed stack traces, so use the `.pth` hook for experiments that compare model inputs. Hooks patch functions in the modules that define them and leave globals in `__main__` unchanged. When `CAPX_TRACE_DIR` is exported, every other Python process in that environment also registers the CaP-X import check, except viewer-only servers. Only a startup-hook failure prints one short line to stderr.
 
@@ -196,8 +198,8 @@ Episode end. The batch trial lifecycle hook (H4) or the web trial hook (H13) que
 returns. When the writer reaches `episode_end`, it fills in `trace_complete`, `gaps`,
 `dropped_events`, `late_events` and `n_warnings`, writes the line, rewrites
 `episode.json` with `status: "ended"` and stops its regular heartbeat updates.
-During a later video copy, the writer refreshes the heartbeat between 1 MiB chunks
-about every 10 seconds while data arrives.
+During a later video copy, the writer refreshes that episode's heartbeat and
+the heartbeats of other open episodes between 1 MiB chunks, about every 10 seconds.
 
 `trace_complete` is true only when `gaps` is empty. `gaps` lists `{code, count, first_seq}`
 for each kind of counted problem: dropped or late events, failed writes, files skipped for
@@ -351,7 +353,8 @@ copy may have been interrupted. It reads events again when the pending marker cl
 - `end_reason`: `completed`, `exception`, `timeout_alarm`, `error`, `stopped_by_user` or
   `cancelled_replaced`, and `end_note` when the recorder ended the episode itself (a start
   that an alarm or a recorder error interrupted, or an episode left open on the trial
-  thread that the next start closed);
+  thread that the next start closed). An `ETIMEDOUT` error inside a trial ends it with
+  `exception`; the runner's alarm ends it with `timeout_alarm`;
 - `harness_summary`: the fields of the returned `TrialSummary`, and `success_meaning`,
   which says what `success` means for the harness that returned it:
   - batch episodes: "sandbox_rc == 0 of the last code block that
@@ -676,7 +679,7 @@ trial ids, digests, code and prose outside these rules are stored as they are.
 - API keys of known formats become `***redacted***`: OpenAI (`sk-`), Google (`AIza`),
   GitHub (`ghp_`, `gho_`, `ghs_`, `github_pat_`), Hugging Face (`hf_`), Slack (`xoxa-`,
   `xoxb-`, `xoxp-`, `xoxr-`), AWS (`AKIA`, `ASIA`), Groq (`gsk_`),
-  xAI (`xai-`), Replicate (`r8_`), and PEM private-key blocks.
+  xAI (`xai-`), Replicate (`r8_`), and PEM and PGP private-key blocks.
 - The value of each secret key name listed above becomes `***masked***`. The name counts
   when a separator (`:` or `=`) follows it, with any whitespace, line breaks included, on
   either side. The name may be quoted, the index of a subscript

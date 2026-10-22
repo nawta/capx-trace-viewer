@@ -45,6 +45,7 @@ from capx_trace_recorder.serialize import (
     summarize,
     summarize_arguments,
 )
+from capx_trace_recorder.timeout import is_trial_alarm
 
 SERVICE_ATTRS = {
     "sam3_seg_fn": "sam3",
@@ -193,7 +194,7 @@ def _service_end(rec: Any, result: Any, exc: BaseException | None) -> None:
         data["message"] = None  # filled in, redacted, by the writer
         status = "error"
         etype = "service_call_error"
-        if isinstance(exc, TimeoutError) and hasattr(ep, "alarm_seen"):
+        if is_trial_alarm(exc) and hasattr(ep, "alarm_seen"):
             ep.alarm_seen = True
 
     def after(ctx, message=message, raw_errors=raw_errors):
@@ -268,9 +269,9 @@ def install_services(api: Any) -> tuple[list[str], list[str]]:
     failed: list[str] = []
     try:
         attrs = api.__dict__
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return wrapped, failed
     for attr in SERVICE_ATTRS:
         fn = attrs.get(attr)
@@ -278,9 +279,9 @@ def install_services(api: Any) -> tuple[list[str], list[str]]:
             continue
         try:
             setattr(api, attr, make_service_wrapper(fn, _service_name(attr, fn), attr))
-        except TimeoutError:
-            raise
         except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             failed.append(f"{attr}: cannot set the attribute ({type(exc).__name__})")
             continue
         if not is_wrapper(attrs.get(attr)):
@@ -294,9 +295,9 @@ def wrapped_services(api: Any) -> list[str]:
     """Service closures of ``api`` that carry an H9 wrapper now (new or from an earlier episode)."""
     try:
         attrs = api.__dict__
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return []
     return [attr for attr in SERVICE_ATTRS if is_wrapper(attrs.get(attr))]
 

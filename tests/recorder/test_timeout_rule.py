@@ -1,8 +1,8 @@
 """Every recorder handler that can catch the trial alarm re-raises it (docs/trace-format.md, section 2).
 
-The alarm is a ``TimeoutError`` raised by a SIGALRM handler wherever the trial
-thread happens to be, also inside recorder code. ``TimeoutError`` is an
-``OSError`` and an ``Exception``, so any ``except Exception`` / ``except OSError``
+The alarm is a ``TimeoutError`` without an errno, raised by a SIGALRM handler.
+An OS ``ETIMEDOUT`` is also a ``TimeoutError`` and must be handled as recorder
+I/O failure. Any ``except Exception`` / ``except OSError``
 / bare ``except`` / ``except BaseException`` in code that runs on the trial
 thread would swallow it and let the trial run past its limit.
 
@@ -11,8 +11,9 @@ the startup entry points, which can report installation errors) and fails on a h
 can catch ``TimeoutError`` unless one of these holds:
 
 * an earlier handler of the same ``try`` catches exactly ``TimeoutError`` and
-  re-raises it (not enough for handlers that also catch non-``Exception``
+  conditionally re-raises the alarm (not enough for handlers that also catch non-``Exception``
   exceptions);
+* an ordinary handler first checks ``is_trial_alarm(exc)`` and re-raises the alarm;
 * the handler re-raises: its body ends with a bare ``raise`` and has no
   ``return`` (and no ``break``/``continue`` out of it) before that;
 * the ``except`` line says ``timeout-ok: <reason>`` (code that only runs on the
@@ -29,6 +30,8 @@ the explicit list ``SAFE`` of classes that cannot be a base of ``TimeoutError``
 ``try``/``except*`` statements are both checked. A handler of a
 non-``Exception`` class (``GeneratorExit``, ``KeyboardInterrupt``,
 ``SystemExit``) must re-raise too (section 2).
+An ``except*`` handler receives an exception group, so its alarm check is
+insufficient; it must end in a bare ``raise`` or carry ``timeout-ok``.
 
 Reviewed stdlib calls that swallow an ``OSError`` internally, so a
 ``TimeoutError`` raised inside them is lost: ``linecache.checkcache`` (reached
@@ -41,10 +44,14 @@ runs in H4's and H15's setup, before the alarm is armed.
 from __future__ import annotations
 
 import ast
+import errno
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+from capx_trace_recorder.hooks.common import guard
 
 REPO = Path(__file__).resolve().parents[2]
 MODULES = sorted(p for p in (REPO / "capx_trace_recorder").rglob("*.py")
@@ -122,7 +129,19 @@ def _reraises(handler: ast.ExceptHandler) -> bool:
 
 
 def _reraises_timeout(handler: ast.ExceptHandler) -> bool:
-    return _names(handler.type) == {"TimeoutError"} and _reraises(handler)
+    return _names(handler.type) == {"TimeoutError"} and (_reraises(handler) or _guards_alarm(handler))
+
+
+def _guards_alarm(handler: ast.ExceptHandler) -> bool:
+    if not handler.name or not handler.body or not isinstance(handler.body[0], ast.If):
+        return False
+    check = handler.body[0]
+    return (isinstance(check.test, ast.Call) and isinstance(check.test.func, ast.Name)
+            and check.test.func.id == "is_trial_alarm" and len(check.test.args) == 1
+            and isinstance(check.test.args[0], ast.Name) and check.test.args[0].id == handler.name
+            and not check.orelse and bool(check.body)
+            and isinstance(check.body[-1], ast.Raise) and check.body[-1].exc is None
+            and not _exits_early(check.body))
 
 
 def violations(path: Path) -> list[str]:
@@ -136,7 +155,8 @@ def violations(path: Path) -> list[str]:
         timeout_reraised = False
         for handler in node.handlers:
             names = _names(handler.type)
-            if _reraises_timeout(handler):
+            try_star = isinstance(node, getattr(ast, "TryStar", ()))
+            if not try_star and _reraises_timeout(handler):
                 timeout_reraised = True
                 continue
             catches_timeout = _can_catch_timeout(names)
@@ -145,7 +165,7 @@ def violations(path: Path) -> list[str]:
                 continue
             if MARKER in lines[handler.lineno - 1]:
                 continue
-            if _reraises(handler):
+            if _reraises(handler) or (not try_star and not catches_non_exception and _guards_alarm(handler)):
                 continue
             if timeout_reraised and not catches_non_exception:
                 continue
@@ -158,6 +178,55 @@ def violations(path: Path) -> list[str]:
 def test_modules_found():
     assert len(MODULES) > 20
     assert all(p.is_file() for p in MODULES)
+
+
+def test_guard_distinguishes_trial_alarm_from_io_timeout(monkeypatch):
+    with pytest.raises(TimeoutError, match="Trial 0 exceeded 1 seconds"):
+        guard(lambda: (_ for _ in ()).throw(TimeoutError("Trial 0 exceeded 1 seconds")))
+    recorded = []
+    monkeypatch.setattr("capx_trace_recorder.hooks.common.report_internal_error",
+                        lambda exc, where: recorded.append(exc))
+    guard(lambda: (_ for _ in ()).throw(OSError(errno.ETIMEDOUT, "timed out")))
+    assert len(recorded) == 1 and recorded[0].errno == errno.ETIMEDOUT
+
+
+def test_bad_exception_str_keeps_original_error():
+    from capx_trace_recorder.hooks.common import internal_error_data
+    from capx_trace_recorder.hooks.http import _safe_str
+    from capx_trace_recorder.hooks.llm import StreamState, end_logical_error
+
+    class Bad(Exception):
+        def __str__(self):
+            raise ValueError("str failed")
+
+    bad = Bad()
+    assert internal_error_data(bad, "w")["message"] == "w: Bad: "
+    assert _safe_str(bad) == "Bad"
+    emitted = []
+    ep = SimpleNamespace(emit=lambda *args, **kwargs: emitted.append((args, kwargs)))
+    lc = SimpleNamespace(episode=ep, role="r", call_kind="k", event_id="id",
+                         attempts=0, last_status=None, turn_index=None,
+                         last_request_id=None, stream_info=None)
+    end_logical_error(lc, bad)
+    assert emitted[-1][1]["data"]["error_type"] == "Bad"
+    assert emitted[-1][1]["builder"].keywords["message"] == "Bad"
+    StreamState(lc).failed(bad)
+    assert emitted[-1][1]["data"]["error_type"] == "Bad"
+
+
+def test_find_runner_dir_handles_file_io_timeout(tmp_path, monkeypatch):
+    from capx_trace_recorder import context as C
+    from capx_trace_recorder.hooks.trial import find_runner_dir
+
+    monkeypatch.delenv("CAPX_TRACE_RUNNER_RUN_DIR", raising=False)
+    monkeypatch.setattr(C.REGISTRY.runner, "run_dir", None)
+    original = Path.is_file
+    def timeout(self):
+        if self.name == "run.json":
+            raise OSError(errno.ETIMEDOUT, "timed out")
+        return original(self)
+    monkeypatch.setattr(Path, "is_file", timeout)
+    assert find_runner_dir(tmp_path) is None
 
 
 @pytest.mark.parametrize("path", MODULES, ids=lambda p: str(p.relative_to(REPO)))
@@ -193,6 +262,15 @@ def test_the_checker_finds_a_swallowing_handler(tmp_path):
     ) == ["4", "9", "16"]
 
 
+def test_the_checker_accepts_conditional_alarm_reraise(tmp_path):
+    assert _lines_flagged(tmp_path,
+        "def good():\n    try:\n        f()\n    except Exception as exc:\n"
+        "        if is_trial_alarm(exc):\n            raise\n        pass\n") == []
+    assert _lines_flagged(tmp_path,
+        "def bad():\n    try:\n        f()\n    except Exception as exc:\n"
+        "        if is_trial_alarm(exc):\n            return\n        pass\n") == ["4"]
+
+
 def test_the_checker_knows_the_aliases_and_early_exits(tmp_path):
     """Aliases of OSError/TimeoutError, unknown names, and handlers that can leave
     before their final ``raise`` are flagged; safe classes and real re-raises are not."""
@@ -226,3 +304,56 @@ def test_the_checker_knows_the_aliases_and_early_exits(tmp_path):
 def test_the_checker_visits_try_star(tmp_path):
     assert _lines_flagged(
         tmp_path, "def a():\n    try:\n        f()\n    except* OSError:\n        pass\n") == ["4"]
+    assert _lines_flagged(
+        tmp_path, "def a():\n    try:\n        f()\n    except* OSError as exc:\n"
+        "        if is_trial_alarm(exc):\n            raise\n") == ["4"]
+
+
+def shadowed_parameter_handlers(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(), filename=str(path))
+    found = []
+
+    class Check(ast.NodeVisitor):
+        def visit_FunctionDef(self, node):
+            self._check_function(node)
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def _check_function(self, node):
+            params = {arg.arg for arg in (*node.args.posonlyargs, *node.args.args,
+                                          *node.args.kwonlyargs)}
+            if node.args.vararg:
+                params.add(node.args.vararg.arg)
+            if node.args.kwarg:
+                params.add(node.args.kwarg.arg)
+
+            class Handlers(ast.NodeVisitor):
+                def visit_FunctionDef(self, nested):
+                    pass
+
+                visit_AsyncFunctionDef = visit_FunctionDef
+                visit_Lambda = visit_FunctionDef
+                visit_ClassDef = visit_FunctionDef
+
+                def visit_ExceptHandler(self, handler):
+                    if handler.name in params:
+                        found.append(f"{path}:{handler.lineno}: {handler.name}")
+                    self.generic_visit(handler)
+
+            checker = Handlers()
+            for stmt in node.body:
+                checker.visit(stmt)
+            for stmt in node.body:
+                self.visit(stmt)
+
+    Check().visit(tree)
+    return found
+
+
+def test_handlers_do_not_shadow_function_parameters(tmp_path):
+    for path in MODULES:
+        assert shadowed_parameter_handlers(path) == []
+    bad = tmp_path / "bad.py"
+    bad.write_text("def f(exc):\n    try:\n        work()\n    except Exception as exc:\n        pass\n"
+                   "    return exc\n")
+    assert len(shadowed_parameter_handlers(bad)) == 1

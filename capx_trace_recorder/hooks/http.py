@@ -54,6 +54,7 @@ from capx_trace_recorder.payload import (
 )
 from capx_trace_recorder.segments import compute_input_summary, text_parts
 from capx_trace_recorder.serialize import json_safe, text_value
+from capx_trace_recorder.timeout import is_trial_alarm
 
 
 class _SendInfo:
@@ -173,9 +174,9 @@ def _after_response(info: _SendInfo, response: Any) -> None:
         content_type = None
         try:
             content_type = headers.get("content-type") if headers is not None else None
-        except TimeoutError:  # the trial alarm (section 2)
-            raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             content_type = None
         lc.stream_info = {"http_status": status, "send_latency_s": latency,
                           "request_event_id": info.event_id, "content_type": content_type,
@@ -224,7 +225,7 @@ def _after_error(info: _SendInfo, exc: BaseException) -> None:
         info.ctx.attempts.append({"status": None, "latency_s": round(latency, 6), "error": None,
                                   RAW_ERROR: error_text, "endpoint": info.endpoint.get("url"),
                                   "model_event_id": info.event_id})
-    if isinstance(exc, TimeoutError) and hasattr(ep, "alarm_seen"):
+    if is_trial_alarm(exc) and hasattr(ep, "alarm_seen"):
         ep.alarm_seen = True
     refs = {"logical_call_id": lc.event_id, "http_attempt": lc.attempts,
             "model_event_id": info.event_id}
@@ -244,9 +245,9 @@ def fill_message(ctx: Any, *, message: str, field: str = "message", limit: int =
 def _safe_str(exc: BaseException) -> str:
     try:
         return str(exc)
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as err:  # noqa: BLE001
+        if is_trial_alarm(err):
+            raise
         return type(exc).__name__
 
 

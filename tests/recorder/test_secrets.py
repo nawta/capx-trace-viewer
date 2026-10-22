@@ -736,6 +736,9 @@ SCOPE = [
      "***redacted*** ***redacted*** ***redacted***"),
     ("private_key_block", "-----BEGIN PRIVATE KEY-----\ntoy-secret\n-----END PRIVATE KEY-----", "***redacted***"),  # gitleaks:allow
     ("private_key_unterminated", "before -----BEGIN PRIVATE KEY-----\ntoy-secret", "before ***redacted***"),  # gitleaks:allow
+    ("pgp_private_key", "-----BEGIN PGP PRIVATE KEY BLOCK-----\ntoy-secret\n-----END PGP PRIVATE KEY BLOCK-----", "***redacted***"),  # gitleaks:allow
+    ("pgp_private_key_unterminated", "before -----BEGIN PGP PRIVATE KEY BLOCK-----\ntoy-secret", "before ***redacted***"),  # gitleaks:allow
+    ("pgp_public_key", "-----BEGIN PGP PUBLIC KEY BLOCK-----\npublic\n-----END PGP PUBLIC KEY BLOCK-----", "-----BEGIN PGP PUBLIC KEY BLOCK-----\npublic\n-----END PGP PUBLIC KEY BLOCK-----"),
     ("permission_denied_path", "/etc/passwd: Permission denied", "/etc/passwd: ***masked*** denied"),
     ("more_secret_names", "api-key=toy-secret x-goog-api-key=toy-secret aws_secret_access_key=toy-secret private_key=toy-secret auth_token=toy-secret session_token=toy-secret passwd=toy-secret",
      "api-key=***masked*** x-goog-api-key=***masked*** aws_secret_access_key=***masked*** private_key=***masked*** auth_token=***masked*** session_token=***masked*** passwd=***masked***"),

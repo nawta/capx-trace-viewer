@@ -55,6 +55,7 @@ from capx_trace_recorder.payload import sanitize_url
 from capx_trace_recorder.segments import split_prompt_text
 from capx_trace_recorder.serialize import float_value, json_safe, text_value
 from capx_trace_recorder.store import EpisodeRecorder, get_store, process_info
+from capx_trace_recorder.timeout import is_trial_alarm
 
 # ---------------------------------------------------------------------------
 # H2: role context
@@ -129,9 +130,9 @@ def _after_patch_libero_goal(env: Any, obs: Any) -> None:
         return
     try:
         text = obs["full_prompt"][-1]["content"][0]["text"]
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return
     before, _after = split_prompt_text(text)
     if before is not None:
@@ -167,9 +168,9 @@ def _field(obj: Any, name: str) -> Any:
         if isinstance(obj, dict):
             return obj.get(name)
         return obj.__dict__.get(name) if hasattr(obj, "__dict__") else None
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return None
 
 
@@ -209,13 +210,18 @@ def find_runner_dir(output_dir: Any) -> Path | None:
         return None
     try:
         path = Path(str(output_dir)).resolve()
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return None
     for candidate in (path, *list(path.parents)[:3]):
-        if (candidate / "run.json").is_file():
-            return candidate
+        try:
+            if (candidate / "run.json").is_file():
+                return candidate
+        except OSError as exc:
+            if is_trial_alarm(exc):
+                raise
+            continue
     return None
 
 
@@ -228,9 +234,9 @@ def _runner_run_json(runner_dir: Path) -> dict[str, Any] | None:
     try:
         with open(runner_dir / "run.json", encoding="utf-8") as fh:
             doc = json.load(fh)
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         doc = None
     cache[key] = doc if isinstance(doc, dict) else None
     return cache[key]
@@ -274,9 +280,9 @@ def env_info(env: Any) -> dict[str, Any]:
         apis = getattr(cfg, "apis", None)
         info["apis"] = [str(a) for a in apis] if isinstance(apis, (list, tuple)) else None
         info["privileged"] = _plain(getattr(cfg, "privileged", None))
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         pass
     try:
         server = low.__dict__.get("viser_server") if low is not None else None
@@ -284,9 +290,9 @@ def env_info(env: Any) -> dict[str, Any]:
         if callable(getter):
             port = getter()
             info["viser_port"] = int(port) if isinstance(port, int) else None
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         pass
     return info
 
@@ -374,9 +380,9 @@ def _episode_start(sig: inspect.Signature, args: tuple, kwargs: dict, slot: Any)
         try:
             rel = Path(str(output_dir)).resolve().relative_to(runner_dir.resolve())
             parts = rel.parts
-        except TimeoutError:  # an OSError subclass: the trial alarm (section 2)
-            raise
-        except (ValueError, OSError):
+        except (ValueError, OSError) as exc:
+            if is_trial_alarm(exc):
+                raise
             parts = ()
         if len(parts) >= 2:
             source = "experiments.run"
@@ -456,10 +462,12 @@ def _episode_start(sig: inspect.Signature, args: tuple, kwargs: dict, slot: Any)
         C.push_episode(ep)
         slot.started = True
     except TimeoutError as exc:
-        # a failing cleanup (a recorder error) is recorded by its own guard and never
-        # replaces the alarm: the bare raise re-raises the original
-        guard(_abandon_start, ep, slot, exc)
-        raise
+        if is_trial_alarm(exc):
+            # a failing cleanup cannot replace the alarm
+            guard(_abandon_start, ep, slot, exc)
+            raise
+        _abandon_start(ep, slot, exc)
+        return None
     except Exception as exc:  # noqa: BLE001 - the alarm is re-raised by the handler above
         _abandon_start(ep, slot, exc)
         return None
@@ -487,7 +495,7 @@ def _abandon_start(ep: Any, slot: Any, exc: BaseException | None, where: str = "
     if slot.abandoned:
         return
     slot.abandoned = True
-    alarm = isinstance(exc, TimeoutError)
+    alarm = is_trial_alarm(exc)
     recorder_error = not alarm and (exc is None or isinstance(exc, Exception))
     what = ("the trial alarm fired" if alarm else
             f"the recorder raised {type(exc).__name__}" if recorder_error else
@@ -663,10 +671,9 @@ def _copy_trial_videos(ctx: Any, code_path: Path, block_count: int, started_wall
                                 if now - last_heartbeat >= 10.0:
                                     try:
                                         os.utime(ctx.base_dir / "heartbeat", None)
-                                    except TimeoutError:
-                                        raise
-                                    except OSError:
+                                    except OSError:  # timeout-ok: writer thread
                                         pass
+                                    ctx.store.refresh_heartbeats()
                                     last_heartbeat = now
                                 try:
                                     chunk = os.read(fd, min(1024 * 1024, info.st_size - copied))
@@ -752,7 +759,7 @@ def end_episode(ep: Any, *, end_reason: str, summary: Any = None, exc: BaseExcep
         "end_reason": end_reason,
         "harness_summary": harness,
         "exception": exception,
-        "alarm_seen": bool(ep.alarm_seen or isinstance(exc, TimeoutError)),
+        "alarm_seen": bool(ep.alarm_seen or is_trial_alarm(exc)),
         "duration_s": round(time.monotonic() - ep.started_mono, 6),
         "n_code_blocks": ep.n_code_blocks,
         "n_model_calls": ep.n_logical_calls,
@@ -786,7 +793,7 @@ def end_episode(ep: Any, *, end_reason: str, summary: Any = None, exc: BaseExcep
 def _episode_finish(ep: Any, summary: Any, exc: BaseException | None) -> None:
     if exc is None:
         reason = "completed"
-    elif isinstance(exc, TimeoutError):
+    elif is_trial_alarm(exc):
         reason = "timeout_alarm"
     else:
         reason = "exception"

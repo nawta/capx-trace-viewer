@@ -15,6 +15,8 @@ import os
 import re
 import socket
 
+from capx_trace_recorder.timeout import is_trial_alarm
+
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 MAX_ID_CHARS = 200
 _BAD_CHARS = re.compile(r"[^A-Za-z0-9._-]")
@@ -24,9 +26,9 @@ def sanitize_id(value: object, *, fallback: str = "x") -> str:
     """Return ``value`` as a valid id (never raises, except the trial alarm)."""
     try:
         text = str(value)
-    except TimeoutError:  # the trial alarm (section 2)
-        raise
-    except Exception:  # noqa: BLE001 - str() of an arbitrary object
+    except Exception as exc:  # noqa: BLE001 - str() of an arbitrary object
+        if is_trial_alarm(exc):
+            raise
         text = ""
     text = _BAD_CHARS.sub("-", text)[:MAX_ID_CHARS]
     if not text:
@@ -95,9 +97,9 @@ def utc_iso(ts: float | None = None) -> str:
 def hostname() -> str:
     try:
         return socket.gethostname()
-    except TimeoutError:
-        raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if is_trial_alarm(exc):
+            raise
         return "unknown-host"
 
 

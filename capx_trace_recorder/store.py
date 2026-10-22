@@ -34,7 +34,7 @@ run's unscoped log (``_stop_all_for_disk``). Lines the run's unscoped log could
 not take are recorded next to it in ``unscoped.<pid>.status.json``.
 
 Exception handlers: code that can run on the trial thread re-raises
-``TimeoutError`` (the trial alarm, section 2); handlers marked ``timeout-ok:
+trial alarms (``TimeoutError`` without an errno, section 2); handlers marked ``timeout-ok:
 writer thread`` run only on the writer thread, which never receives the alarm
 (``tests/recorder/test_timeout_rule.py`` checks every handler).
 
@@ -67,6 +67,7 @@ from capx_trace_recorder.config import (
     TraceConfig,
 )
 from capx_trace_recorder.ids import hostname, new_event_id, utc_iso
+from capx_trace_recorder.timeout import is_trial_alarm
 
 PID = os.getpid()
 DISK_CHECK_INTERVAL_S = 5.0
@@ -171,7 +172,7 @@ class EventSink:
              writer_generated: bool = False, drop_builder: Any = KEEP_BUILDER,
              keep_payload: bool = False, recorder_owned: bool = False) -> str:
         """Queue one event; returns its ``event_id``. Never blocks; raises only
-        ``TimeoutError`` (the trial alarm) and non-``Exception`` exceptions.
+        the trial alarm and non-``Exception`` exceptions.
 
         ``writer_generated`` marks the writer's own diagnostics: they are never
         ``late`` even when they follow ``episode_end``. ``recorder_owned`` permits a
@@ -184,9 +185,9 @@ class EventSink:
             return event_id
         try:
             sim_step, sim_time = self.clock() if sim is None else sim
-        except TimeoutError:  # the trial alarm (section 2)
-            raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             sim_step, sim_time = None, None
         event: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
@@ -441,9 +442,9 @@ class BuildContext:
         self.base_dir = wep.base_dir
         try:
             self._resolved_base_dir = self.base_dir.resolve(strict=False)
-        except TimeoutError:
-            raise
-        except (RuntimeError, ValueError, OSError):
+        except (RuntimeError, ValueError, OSError) as exc:
+            if is_trial_alarm(exc):
+                raise
             self._resolved_base_dir = None
         # artifact paths are relative to the episode dir, or to the run dir for
         # unscoped events (prefixed with the unscoped files directory name)
@@ -481,9 +482,9 @@ class BuildContext:
                     and not Path(relpath).is_absolute()
                     and self._resolved_base_dir is not None
                     and target.resolve(strict=False).is_relative_to(self._resolved_base_dir))
-        except TimeoutError:
-            raise
-        except (RuntimeError, ValueError, OSError):
+        except (RuntimeError, ValueError, OSError) as exc:
+            if is_trial_alarm(exc):
+                raise
             safe = False
         if not safe:
             art["reason"] = "unsafe_path"
@@ -823,9 +824,9 @@ class TraceStore:
                 self._writer = thread
                 try:
                     thread.start()
-                except TimeoutError:  # the trial alarm (section 2)
-                    raise
-                except Exception:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001
+                    if is_trial_alarm(exc):
+                        raise
                     self._writer_failed = True
                     return False
         w = self._writer
@@ -917,9 +918,9 @@ class TraceStore:
     def _atexit(self) -> None:
         try:
             self.shutdown(ATEXIT_WAIT_S)
-        except TimeoutError:  # section 2: re-raised (KeyboardInterrupt is not caught)
-            raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if is_trial_alarm(exc):
+                raise
             pass
 
     # -- writer thread --------------------------------------------------------
@@ -1618,6 +1619,10 @@ class TraceStore:
             pass
 
     # -- heartbeat ------------------------------------------------------------
+    def refresh_heartbeats(self) -> None:
+        """Refresh every open episode while the writer copies a video."""
+        self._heartbeat(force=True)
+
     def _heartbeat(self, force: bool = False) -> None:
         for wep in list(self._open_weps.values()):
             self._heartbeat_one(wep, force=force)

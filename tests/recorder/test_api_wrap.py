@@ -23,6 +23,7 @@ import pytest
 
 from capx_trace_recorder import context as C
 from capx_trace_recorder import store as S
+from capx_trace_recorder.hooks import api as API
 from capx_trace_recorder.config import TraceConfig
 from capx_trace_recorder.hooks.api import install_api, uninstall_api
 from tracing_testlib import PY312, REPO, clean_env
@@ -211,6 +212,29 @@ def test_recorded_calls_copy_arrays_and_mask_secrets(episode):
     assert error["error_type"] == "RuntimeError" and error["message"] == "expected failure"
     assert "capx_trace_recorder" not in (error["traceback"] or "")
     uninstall_api(api)
+
+
+def test_api_error_keeps_original_type_when_raw_frames_fails(episode, monkeypatch):
+    store, ep = episode
+    api = ToyApi()
+    assert install_api(api)[0]
+
+    def fail_frames(_exc):
+        raise RuntimeError("frame extraction failed")
+
+    monkeypatch.setattr(API, "raw_frames", fail_frames)
+    original = ValueError("original failure")
+    try:
+        with pytest.raises(ValueError) as info:
+            api.boom(original)
+        assert info.value is original
+        assert store.flush(20)
+        events, corrupt, torn = read_events(ep.events_path)
+        assert corrupt == 0 and not torn
+        errors = by_type(events, "api_call_error")
+        assert len(errors) == 1 and errors[0]["data"]["error_type"] == "ValueError"
+    finally:
+        uninstall_api(api)
 
 
 def test_install_rolls_back_when_combined_doc_changes():
